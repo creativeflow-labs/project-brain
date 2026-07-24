@@ -8,5 +8,7 @@ __pycache__/
 *.db
 data/uploads/*
 !data/uploads/.gitkeep
+data/secrets/*
+!data/secrets/.gitkeep
 data/browser_uploads/
 data/test_uploads/

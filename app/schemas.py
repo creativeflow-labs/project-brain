@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -58,8 +59,22 @@ class NotionImportRequest(BaseModel):
     page_ids: list[str] = Field(min_length=1, max_length=20)
 
 
+class NotionConnectRequest(BaseModel):
+    project_id: str
+    access_token: str = Field(min_length=10)
+    auth_mode: Literal["personal_access_token", "internal_access_token"] = (
+        "personal_access_token"
+    )
+    auto_sync_enabled: bool = True
+    sync_interval_minutes: int = Field(default=60, ge=15, le=1440)
+
+
+class NotionSyncRequest(BaseModel):
+    project_id: str
+    force: bool = False
+
+
 class GmailSyncRequest(BaseModel):
     project_id: str
     query: str = Field(default="newer_than:30d", max_length=500)
     max_results: int = Field(default=30, ge=1, le=100)
-

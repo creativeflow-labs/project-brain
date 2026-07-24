@@ -15,11 +15,14 @@ class Settings(BaseSettings):
     openai_embedding_model: str = "text-embedding-3-small"
     embedding_dimensions: int = 384
 
-    notion_version: str = "2025-09-03"
+    notion_version: str = "2026-03-11"
+    notion_max_pages_per_sync: int = 2000
+    notion_scheduler_poll_seconds: int = 60
     google_client_id: str = ""
     google_client_secret: str = ""
     google_redirect_uri: str = "http://localhost:8000/api/connectors/gmail/callback"
     token_encryption_key: str = ""
+    token_key_file: Path = Path("./data/secrets/token-encryption.key")
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
@@ -31,4 +34,3 @@ class Settings(BaseSettings):
 @lru_cache
 def get_settings() -> Settings:
     return Settings()
-

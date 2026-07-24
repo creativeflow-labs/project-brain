@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import os
 import secrets
@@ -20,7 +21,7 @@ from app.connectors.gmail import (
     credentials_from_dict,
     credentials_to_dict,
 )
-from app.connectors.notion import NotionConnector
+from app.connectors.notion import NotionApiError, NotionConnector
 from app.db import get_db, init_db
 from app.models import ConnectorCredential, Document, Project
 from app.schemas import (
@@ -28,27 +29,51 @@ from app.schemas import (
     AskResponse,
     DocumentOut,
     GmailSyncRequest,
+    NotionConnectRequest,
     NotionImportRequest,
+    NotionSyncRequest,
     ProjectCreate,
     ProjectOut,
 )
 from app.services.ingestion import IngestionInput, ingest_document
+from app.services.notion_sync import (
+    NotionSyncBusyError,
+    connect_notion,
+    get_notion_status,
+    sync_due_notion_connections,
+    sync_notion_project,
+)
 from app.services.parser import ParseError, parse_file_bytes
 from app.services.rag import answer_question
 from app.services.security import decrypt_json, encrypt_json
+from app.version import APP_VERSION
 
 settings = get_settings()
 oauth_states: dict[str, str] = {}
+
+
+async def notion_scheduler_loop() -> None:
+    while True:
+        await asyncio.sleep(settings.notion_scheduler_poll_seconds)
+        await asyncio.to_thread(sync_due_notion_connections)
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     settings.upload_dir.mkdir(parents=True, exist_ok=True)
     init_db()
-    yield
+    scheduler_task = asyncio.create_task(notion_scheduler_loop())
+    try:
+        yield
+    finally:
+        scheduler_task.cancel()
+        try:
+            await scheduler_task
+        except asyncio.CancelledError:
+            pass
 
 
-app = FastAPI(title=settings.app_name, version="0.1.0", lifespan=lifespan)
+app = FastAPI(title=settings.app_name, version=APP_VERSION, lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=Path(__file__).parent / "static"), name="static")
 
 
@@ -70,6 +95,7 @@ def health() -> dict:
         "status": "ok",
         "database": "postgresql+pgvector" if settings.is_postgres else "sqlite",
         "answer_mode": "generative" if settings.openai_api_key else "extractive",
+        "version": APP_VERSION,
     }
 
 
@@ -172,14 +198,64 @@ def import_notion(payload: NotionImportRequest, db: Session = Depends(get_db)):
     aggregate = {"pages": 0, "attachments": 0, "unchanged": 0, "errors": []}
     for page_id in payload.page_ids:
         try:
-            result = connector.sync_page(db, payload.project_id, page_id)
+            page = connector.fetch_page(page_id)
+            result = connector.sync_page(db, payload.project_id, page)
             aggregate["pages"] += result.pages
             aggregate["attachments"] += result.attachments
             aggregate["unchanged"] += result.unchanged
-            aggregate["errors"].extend(result.errors or [])
+            aggregate["errors"].extend(result.warnings)
         except Exception as exc:
+            db.rollback()
             aggregate["errors"].append(f"{page_id}: {exc}")
+    connector.close()
     return aggregate
+
+
+@app.post("/api/connectors/notion/connect")
+def notion_connect(payload: NotionConnectRequest, db: Session = Depends(get_db)):
+    require_project(db, payload.project_id)
+    try:
+        return connect_notion(
+            db,
+            payload.project_id,
+            payload.access_token,
+            payload.auth_mode,
+            payload.auto_sync_enabled,
+            payload.sync_interval_minutes,
+        )
+    except NotionApiError as exc:
+        status_code = 401 if exc.status_code in {401, 403} else 502
+        raise HTTPException(
+            status_code=status_code, detail=f"Notion 토큰 확인 실패: {exc}"
+        ) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502, detail=f"Notion 연결 저장 실패: {exc}"
+        ) from exc
+
+
+@app.get("/api/connectors/notion/status")
+def notion_status(project_id: str, db: Session = Depends(get_db)):
+    require_project(db, project_id)
+    return get_notion_status(db, project_id)
+
+
+@app.post("/api/connectors/notion/sync")
+def notion_sync(payload: NotionSyncRequest, db: Session = Depends(get_db)):
+    require_project(db, payload.project_id)
+    try:
+        return sync_notion_project(db, payload.project_id, payload.force)
+    except NotionSyncBusyError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except NotionApiError as exc:
+        status_code = 401 if exc.status_code in {401, 403} else 502
+        raise HTTPException(
+            status_code=status_code, detail=f"Notion 동기화 실패: {exc}"
+        ) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502, detail=f"Notion 동기화 실패: {exc}"
+        ) from exc
 
 
 def _google_client_config() -> dict:
@@ -228,10 +304,6 @@ def gmail_callback(state: str, code: str, db: Session = Depends(get_db)):
     if not project_id:
         raise HTTPException(status_code=400, detail="OAuth 상태가 만료되었거나 유효하지 않습니다.")
     require_project(db, project_id)
-    if not settings.token_encryption_key:
-        raise HTTPException(
-            status_code=503, detail="TOKEN_ENCRYPTION_KEY를 .env에 설정해 주세요."
-        )
     flow = _google_flow(state)
     flow.fetch_token(code=code)
     encrypted = encrypt_json(credentials_to_dict(flow.credentials))

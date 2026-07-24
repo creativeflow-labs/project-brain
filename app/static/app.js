@@ -32,7 +32,7 @@ async function loadHealth() {
     const health = await api("/api/health");
     $("#system-status").textContent = "정상 작동";
     $("#system-description").textContent =
-      `${health.database} · ${health.answer_mode === "generative" ? "생성형 답변" : "API 키 없는 추출형 답변"}`;
+      `v${health.version} · ${health.database} · ${health.answer_mode === "generative" ? "생성형 답변" : "API 키 없는 추출형 답변"}`;
   } catch {
     $("#system-status").textContent = "연결 오류";
     $("#system-description").textContent = "API 서버 상태를 확인해 주세요.";
@@ -51,7 +51,7 @@ async function loadProjects() {
     .map(project => `<option value="${project.id}" ${project.id === state.projectId ? "selected" : ""}>${escapeHtml(project.name)}</option>`)
     .join("");
   localStorage.setItem("projectBrainProjectId", state.projectId);
-  await loadDocuments();
+  await Promise.all([loadDocuments(), loadNotionStatus()]);
 }
 
 async function loadDocuments() {
@@ -165,25 +165,94 @@ async function askQuestion(event) {
   }
 }
 
-async function importNotion(event) {
+function renderNotionStatus(status) {
+  const panel = $("#notion-status");
+  const syncButton = $("#notion-sync");
+  const forceButton = $("#notion-force-sync");
+  panel.className = `connector-status ${status.status || ""}`;
+  if (!status.connected) {
+    panel.innerHTML = `<strong>연결되지 않음</strong><span>토큰을 한 번 등록하면 페이지 주소 없이 동기화할 수 있습니다.</span>`;
+    syncButton.disabled = true;
+    forceButton.disabled = true;
+    return;
+  }
+  syncButton.disabled = status.status === "running";
+  forceButton.disabled = status.status === "running";
+  const statusLabel = {
+    connected: "연결됨 · 첫 동기화 전",
+    running: "동기화 진행 중",
+    success: "동기화 정상",
+    partial: "일부 항목 확인 필요",
+    failed: "동기화 실패"
+  }[status.status] || "연결됨";
+  const details = [];
+  if (status.last_success_at) details.push(`마지막 성공 ${formatDate(status.last_success_at)}`);
+  if (Number.isFinite(status.processed_pages)) details.push(`처리 ${status.processed_pages}개`);
+  if (Number.isFinite(status.changed_pages)) details.push(`변경 ${status.changed_pages}개`);
+  if (status.error_count) details.push(`오류 ${status.error_count}개`);
+  if (status.discovery_incomplete) details.push("탐색 범위 확인 필요");
+  if (status.auto_sync_enabled) details.push(`${status.sync_interval_minutes}분마다 자동`);
+  panel.innerHTML = `<strong>${escapeHtml(statusLabel)}</strong><span>${escapeHtml(details.join(" · ") || "연결 정보가 안전하게 저장되었습니다.")}</span>
+    ${status.last_error ? `<span>${escapeHtml(status.last_error)}</span>` : ""}`;
+}
+
+async function loadNotionStatus() {
+  if (!state.projectId) return;
+  try {
+    const status = await api(`/api/connectors/notion/status?project_id=${encodeURIComponent(state.projectId)}`);
+    renderNotionStatus(status);
+  } catch (error) {
+    renderNotionStatus({ connected: false, status: "failed" });
+    toast(error.message, true);
+  }
+}
+
+async function connectNotion(event) {
   event.preventDefault();
   if (!currentProjectRequired()) return;
   const button = event.submitter;
   button.disabled = true;
   try {
-    const result = await api("/api/connectors/notion/import", {
+    await api("/api/connectors/notion/connect", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         project_id: state.projectId,
-        integration_token: $("#notion-token").value,
-        page_ids: $("#notion-pages").value.split("\n").map(value => value.trim()).filter(Boolean)
+        access_token: $("#notion-token").value.trim(),
+        auth_mode: $("#notion-auth-mode").value,
+        auto_sync_enabled: $("#notion-auto-sync").checked,
+        sync_interval_minutes: Number($("#notion-sync-interval").value)
       })
     });
-    toast(`Notion: 페이지 ${result.pages}, 첨부 ${result.attachments}, 변경 없음 ${result.unchanged}`);
-    if (result.errors.length) toast(result.errors[0], true);
+    $("#notion-token").value = "";
+    toast("Notion 연결을 안전하게 저장했습니다. 첫 동기화를 시작합니다.");
+    await syncNotion(false);
+  } catch (error) {
+    toast(error.message, true);
+    await loadNotionStatus();
+  } finally {
+    button.disabled = false;
+  }
+}
+
+async function syncNotion(force = false) {
+  if (!currentProjectRequired()) return;
+  const buttons = [$("#notion-sync"), $("#notion-force-sync")];
+  buttons.forEach(button => button.disabled = true);
+  renderNotionStatus({ connected: true, status: "running" });
+  try {
+    const result = await api("/api/connectors/notion/sync", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ project_id: state.projectId, force })
+    });
+    const summary = `Notion: 처리 ${result.processed_pages || 0}, 변경 ${result.changed_pages || 0}, 첨부 ${result.changed_attachments || 0}`;
+    toast(summary, Boolean(result.error_count));
+    renderNotionStatus(result);
     await loadDocuments();
-  } catch (error) { toast(error.message, true); }
-  finally { button.disabled = false; }
+  } catch (error) {
+    toast(error.message, true);
+  } finally {
+    await loadNotionStatus();
+  }
 }
 
 async function connectGmail() {
@@ -232,7 +301,7 @@ function bindEvents() {
     localStorage.setItem("projectBrainProjectId", state.projectId);
     $("#messages").innerHTML = `<div class="empty-chat"><div class="spark">✦</div><h2>새 프로젝트의 기억을 불러왔습니다.</h2><p>등록된 자료를 바탕으로 질문해 보세요.</p></div>`;
     renderEvidence([]);
-    await loadDocuments();
+    await Promise.all([loadDocuments(), loadNotionStatus()]);
   });
   $("#new-project-button").addEventListener("click", () => $("#project-dialog").showModal());
   $("#close-dialog").addEventListener("click", () => $("#project-dialog").close());
@@ -259,7 +328,9 @@ function bindEvents() {
   $("#refresh-documents").addEventListener("click", loadDocuments);
   $("#ask-form").addEventListener("submit", askQuestion);
   $$(".suggestions button").forEach(button => button.addEventListener("click", () => { $("#question").value = button.textContent; $("#question").focus(); }));
-  $("#notion-form").addEventListener("submit", importNotion);
+  $("#notion-connect-form").addEventListener("submit", connectNotion);
+  $("#notion-sync").addEventListener("click", () => syncNotion(false));
+  $("#notion-force-sync").addEventListener("click", () => syncNotion(true));
   $("#gmail-connect").addEventListener("click", connectGmail);
   $("#gmail-sync-form").addEventListener("submit", syncGmail);
 }
@@ -273,4 +344,3 @@ async function init() {
   }
 }
 init().catch(error => toast(error.message, true));
-

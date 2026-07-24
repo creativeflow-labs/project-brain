@@ -11,7 +11,7 @@
 - 프로젝트 생성과 전환
 - PDF·DOCX·TXT·MD 일반 업로드
 - PDF 페이지, DOCX 제목·표, Markdown 제목 위치 보존
-- Notion 페이지 블록과 지원 형식 첨부파일 가져오기
+- Notion 접근 범위 자동 발견·증분 동기화와 지원 형식 첨부파일 가져오기
 - Gmail 본문과 지원 형식 첨부파일 동기화
 - PostgreSQL 17 + pgvector 저장
 - 의미 유사도와 키워드 중첩을 결합한 프로젝트 단위 검색
@@ -86,14 +86,25 @@ OPENAI_API_KEY=sk-...
 
 ## Notion 연결
 
-1. Notion에서 Internal Integration을 만듭니다.
-2. 가져올 페이지에서 해당 Integration을 연결(공유)합니다.
-3. 화면의 `데이터 연결 > Notion`에서 Integration token과 페이지 URL을 입력합니다.
-4. 여러 페이지는 한 줄에 하나씩 입력합니다.
+현재 사내 검증에서 한 계정의 접근 범위를 넓게 동기화하려면 Notion 개발자 화면의 `개인 액세스 토큰`을 사용합니다.
 
-Notion 토큰은 현재 MVP에서 서버에 저장하지 않고 해당 가져오기 요청에만 사용합니다. 페이지 블록을 읽은 뒤, 페이지 안의 PDF·DOCX·TXT·MD 파일도 내려받아 공통 파서로 전달합니다.
+1. Notion 개발자 화면에서 `개인 액세스 토큰`을 만듭니다.
+2. Notion API 기능을 허용하고 토큰을 복사합니다.
+3. `데이터 연결 > Notion`에서 토큰과 인증 범위를 입력합니다.
+4. 자동 동기화 주기를 선택하고 `연결 저장 후 동기화`를 누릅니다.
 
-Notion이 발급하는 내부 파일 URL은 임시 URL이므로 동기화 중 즉시 다운로드합니다.
+토큰은 PostgreSQL에 Fernet 암호화해 저장하며, 암호화 키가 비어 있으면 `data/secrets/token-encryption.key`에 권한 `600`으로 자동 생성합니다. 페이지 URL은 입력하지 않습니다.
+
+동기화는 다음 순서로 작동합니다.
+
+- Search API로 접근 가능한 페이지와 데이터 소스를 발견
+- 데이터 소스 항목과 발견된 하위 페이지 순회
+- `last_edited_time`과 콘텐츠 해시를 이용해 변경된 문서만 재처리
+- 페이지별 오류 격리, 429·5xx 재시도, 최대 수집량 제한
+- 삭제·보관·권한 회수로 404가 확인된 기존 문서와 첨부 인덱스 제거
+- Notion이 호스팅하는 PDF·DOCX·TXT·MD만 크기 제한 안에서 다운로드
+
+Notion 공식 Search API는 계정 내 모든 문서의 완전한 열거를 보장하지 않습니다. PAT 모드는 `최선 노력 계정 탐색`, 내부 연결과 향후 OAuth 모드는 `승인된 범위 동기화`로 상태 화면에 구분합니다.
 
 ## Gmail 연결
 
@@ -108,7 +119,7 @@ Gmail은 Google Cloud OAuth 설정이 있어야 합니다.
 http://localhost:8000/api/connectors/gmail/callback
 ```
 
-5. 암호화 키를 생성합니다.
+5. 필요하면 암호화 키를 직접 생성합니다. 비워두면 로컬 보안 파일로 자동 생성됩니다.
 
 ```bash
 python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
@@ -161,6 +172,9 @@ DATABASE_URL=sqlite:///./data/test_project_brain.db python -m pytest -q
 - 긴 문서 청킹
 - 업로드 → 검색 → 출처 → 삭제 API 흐름
 - 프로젝트 간 데이터 격리
+- Notion 페이지·데이터 소스 자동 발견
+- Notion 속성·본문·하위 페이지 인덱싱
+- Notion 토큰 암호화 저장과 API 응답 비노출
 
 ## API 요약
 
@@ -173,7 +187,10 @@ DATABASE_URL=sqlite:///./data/test_project_brain.db python -m pytest -q
 | `GET` | `/api/projects/{id}/documents` | 프로젝트 자료 목록 |
 | `DELETE` | `/api/documents/{id}` | 문서와 청크 삭제 |
 | `POST` | `/api/ask` | 프로젝트 범위 검색·답변 |
-| `POST` | `/api/connectors/notion/import` | Notion 페이지·첨부 가져오기 |
+| `POST` | `/api/connectors/notion/connect` | Notion 토큰 암호화 저장 |
+| `GET` | `/api/connectors/notion/status` | Notion 연결·동기화 상태 |
+| `POST` | `/api/connectors/notion/sync` | Notion 접근 범위 증분 동기화 |
+| `POST` | `/api/connectors/notion/import` | 이전 페이지 지정 방식 호환 API |
 | `GET` | `/api/connectors/gmail/auth-url` | Gmail OAuth 시작 |
 | `POST` | `/api/connectors/gmail/sync` | Gmail 본문·첨부 동기화 |
 
@@ -183,7 +200,9 @@ Swagger 문서는 `http://localhost:8000/docs`에서 확인할 수 있습니다.
 
 - 스캔 PDF OCR 제외
 - HWP/HWPX, PPTX, XLSX, 이미지, ZIP 제외
-- Notion은 수동 가져오기이며 Webhook 증분 동기화 제외
+- Notion Search API의 계정 전체 열거 비보장
+- Notion Webhook 실시간 동기화 제외, 현재는 설정 주기 기반 자동 동기화
+- 외부 고객용 Notion OAuth 제외, 현재는 PAT·내부 연결 토큰
 - Gmail은 검색식 기반 수동 동기화이며 Push Notification 제외
 - 사용자 로그인과 세부 권한 제외, 프로젝트 단위 데이터 격리만 적용
 - 백그라운드 큐 제외, 요청 안에서 파싱·임베딩 수행
@@ -191,3 +210,12 @@ Swagger 문서는 `http://localhost:8000/docs`에서 확인할 수 있습니다.
 - 악성코드 스캔 제외. 외부 공개 전에 ClamAV 또는 별도 검사 계층 필요
 
 이 제한들은 구조적 누락이 아니라 테스트 범위를 빠르게 확보하기 위한 명시적 MVP 경계입니다.
+
+## 버전 관리
+
+이 프로젝트는 로컬 Git으로 관리합니다.
+
+- `v0.1.0`: 페이지 URL을 직접 입력하는 최초 MVP
+- `v0.2.0`: Notion 연결 저장·자동 발견·증분 동기화
+
+변경 내용은 [CHANGELOG.md](CHANGELOG.md), 주요 설계 결정은 [docs/DECISIONS.md](docs/DECISIONS.md)에서 확인합니다.

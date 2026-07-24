@@ -38,6 +38,14 @@ def ingest_document(db: Session, item: IngestionInput) -> tuple[Document, bool]:
         )
     )
     if existing and existing.content_hash == content_hash:
+        existing.title = item.title
+        existing.filename = item.filename
+        existing.mime_type = item.mime_type
+        existing.source_url = item.source_url
+        existing.metadata_json = item.metadata or {}
+        existing.warnings_json = item.warnings or []
+        db.commit()
+        db.refresh(existing)
         return existing, False
 
     if existing:
@@ -91,4 +99,3 @@ def ingest_document(db: Session, item: IngestionInput) -> tuple[Document, bool]:
     db.commit()
     db.refresh(document)
     return document, True
-

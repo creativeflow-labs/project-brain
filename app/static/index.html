@@ -30,7 +30,7 @@
         <div class="status-line"><span class="pulse"></span><strong id="system-status">확인 중</strong></div>
         <p id="system-description">서버 상태를 확인하고 있습니다.</p>
       </div>
-      <p class="version">MVP v0.1 · Read only</p>
+      <p class="version">MVP v0.2 · Read only</p>
     </aside>
 
     <main>
@@ -104,7 +104,7 @@
           <div>
             <p class="eyebrow">CONNECTORS</p>
             <h1>데이터 연결</h1>
-            <p>선택한 페이지와 이메일만 현재 프로젝트의 기억으로 가져옵니다.</p>
+            <p>연결 권한 범위 안의 지식을 자동으로 발견하고 변경분만 동기화합니다.</p>
           </div>
         </header>
 
@@ -113,13 +113,29 @@
             <div class="connector-brand notion">N</div>
             <div class="connector-copy">
               <h2>Notion</h2>
-              <p>페이지 블록과 페이지 안의 PDF·DOCX·TXT·MD 첨부파일을 함께 가져옵니다.</p>
+              <p>페이지 주소를 입력하지 않아도 접근 가능한 페이지·데이터베이스와 지원 첨부파일을 자동으로 동기화합니다.</p>
             </div>
-            <form id="notion-form">
-              <label>Integration token<input id="notion-token" type="password" placeholder="secret_..." required></label>
-              <label>Page URL 또는 ID<textarea id="notion-pages" placeholder="페이지마다 한 줄씩 입력" required></textarea></label>
-              <button class="primary-button" type="submit">Notion 가져오기</button>
+            <div id="notion-status" class="connector-status">
+              <strong>연결 상태 확인 중</strong>
+              <span>현재 프로젝트의 Notion 연결을 확인하고 있습니다.</span>
+            </div>
+            <form id="notion-connect-form">
+              <label>Notion 액세스 토큰<input id="notion-token" type="password" autocomplete="off" placeholder="토큰은 암호화해 이 기기에만 저장합니다." required></label>
+              <label>인증 범위
+                <select id="notion-auth-mode">
+                  <option value="personal_access_token">개인 액세스 토큰 · 계정 접근 범위</option>
+                  <option value="internal_access_token">내부 연결 토큰 · 공유된 범위</option>
+                </select>
+              </label>
+              <label class="check-label"><input id="notion-auto-sync" type="checkbox" checked> 자동 동기화 사용</label>
+              <label>동기화 주기(분)<input id="notion-sync-interval" type="number" min="15" max="1440" value="60"></label>
+              <button class="primary-button" type="submit">연결 저장 후 동기화</button>
             </form>
+            <div class="connector-button-row">
+              <button class="secondary-button" id="notion-sync" disabled>지금 동기화</button>
+              <button class="text-button" id="notion-force-sync" disabled>전체 다시 검사</button>
+            </div>
+            <p class="connector-note">Notion Search API 특성상 계정 범위 탐색은 최선 노력 방식입니다. 동기화 결과와 누락 가능성을 상태에 표시합니다.</p>
           </article>
 
           <article class="connector-card">
@@ -155,4 +171,3 @@
   <script src="/static/app.js"></script>
 </body>
 </html>
-

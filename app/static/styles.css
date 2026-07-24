@@ -143,8 +143,20 @@ main { min-width: 0; padding: 0 42px 42px; }
 .connector-card input, .connector-card textarea, dialog input, dialog textarea {
   width: 100%; border: 1px solid var(--line); border-radius: 9px; padding: 10px; outline: none; background: #fbfcfa;
 }
+.connector-card select {
+  width: 100%; border: 1px solid var(--line); border-radius: 9px; padding: 10px; outline: none; background: #fbfcfa;
+}
 .connector-card textarea { min-height: 86px; resize: vertical; }
-.connector-card input:focus, .connector-card textarea:focus, dialog input:focus, dialog textarea:focus { border-color: var(--green-2); }
+.connector-card input:focus, .connector-card textarea:focus, .connector-card select:focus, dialog input:focus, dialog textarea:focus { border-color: var(--green-2); }
+.connector-status { margin-top: 18px; padding: 13px 14px; border: 1px solid var(--line); border-radius: 10px; background: #fbfcfa; display: grid; gap: 5px; }
+.connector-status strong { font-size: 12px; }
+.connector-status span { color: var(--muted); font-size: 10px; line-height: 1.55; }
+.connector-status.success { border-color: #bcd7c5; background: var(--soft-green); }
+.connector-status.partial, .connector-status.failed { border-color: #edd59f; background: #fff8e9; }
+.connector-card .check-label { flex-direction: row; align-items: center; gap: 8px; }
+.connector-card .check-label input { width: auto; }
+.connector-button-row { display: flex; gap: 10px; align-items: center; margin-top: 12px; }
+.connector-note { color: var(--muted); font-size: 10px; line-height: 1.55; margin: 12px 0 0; }
 
 dialog { border: 0; border-radius: 16px; padding: 0; width: min(440px, calc(100% - 32px)); box-shadow: 0 30px 100px rgba(0,0,0,.25); }
 dialog::backdrop { background: rgba(9,23,16,.55); backdrop-filter: blur(4px); }
@@ -181,4 +193,3 @@ dialog textarea { min-height: 88px; resize: vertical; }
   .document-row { grid-template-columns: 38px 1fr auto; }
   .warning-badge { display: none; }
 }
-

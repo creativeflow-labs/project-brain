@@ -26,10 +26,10 @@ services:
       - "8000:8000"
     volumes:
       - ./data/uploads:/app/data/uploads
+      - ./data/secrets:/app/data/secrets
     depends_on:
       db:
         condition: service_healthy
 
 volumes:
   project_brain_db:
-
