@@ -1,6 +1,6 @@
 # Project Brain MVP
 
-주요 제품·기술 결정은 [docs/DECISIONS.md](docs/DECISIONS.md)에 기록합니다.
+주요 제품·기술 결정은 [docs/DECISIONS.md](docs/DECISIONS.md), 장기 기능 계획은 [docs/ROADMAP.md](docs/ROADMAP.md)에 기록합니다.
 
 프로젝트별로 선택한 문서·Notion 페이지·Gmail 메시지를 연결하고, 근거와 함께 답하는 읽기 전용 AI 비서입니다.
 
@@ -218,4 +218,4 @@ Swagger 문서는 `http://localhost:8000/docs`에서 확인할 수 있습니다.
 - `v0.1.0`: 페이지 URL을 직접 입력하는 최초 MVP
 - `v0.2.0`: Notion 연결 저장·자동 발견·증분 동기화
 
-변경 내용은 [CHANGELOG.md](CHANGELOG.md), 주요 설계 결정은 [docs/DECISIONS.md](docs/DECISIONS.md)에서 확인합니다.
+변경 내용은 [CHANGELOG.md](CHANGELOG.md), 주요 설계 결정은 [docs/DECISIONS.md](docs/DECISIONS.md), 장기 기능 계획은 [docs/ROADMAP.md](docs/ROADMAP.md)에서 확인합니다.
