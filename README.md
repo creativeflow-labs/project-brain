@@ -1,12 +1,28 @@
-# Project Brain MVP
+# Project Brain
 
-주요 제품·기술 결정은 [docs/DECISIONS.md](docs/DECISIONS.md), 장기 기능 계획은 [docs/ROADMAP.md](docs/ROADMAP.md)에 기록합니다.
+Notion, Gmail, 일반 문서를 프로젝트 단위로 연결하고 원문 근거와 함께 답하는 팀용 AI 지식 비서입니다.
 
-프로젝트별로 선택한 문서·Notion 페이지·Gmail 메시지를 연결하고, 근거와 함께 답하는 읽기 전용 AI 비서입니다.
+## Project Overview
 
-이 버전은 대표님이 VS Code에서 직접 실행하고 제품 흐름을 검증하기 위한 로컬 MVP입니다. 한 프로젝트의 데이터가 다른 프로젝트 검색에 섞이지 않도록 `project_id`를 모든 수집·청크·검색 단계에서 강제합니다.
+Project Brain은 흩어진 프로젝트 기록을 연결해 무엇이 왜 결정됐고, 현재 어떤 정보가 근거가 되는지 설명하는 읽기 전용 AI 비서를 지향합니다. 단순한 전사 검색보다 팀과 프로젝트에 밀착된 맥락, 출처, 변경 이력을 정확하게 다루는 것이 제품의 핵심입니다.
 
-## 구현 범위
+현재 `v0.2.1`은 데이터 연결과 로컬 실행 흐름이 동작하는 기술 기준선입니다. 검색 코어는 초기형 하이브리드 RAG이며, 대화 상태·문맥 복원·상충 정보 판정은 다음 버전에서 고도화합니다.
+
+### Core Experience
+
+```text
+프로젝트 생성
+  → Notion·Gmail·파일 연결
+  → 프로젝트 범위 검색
+  → 원문 근거를 포함한 답변
+  → 출처에서 직접 검증
+```
+
+한 프로젝트의 데이터가 다른 프로젝트 검색에 섞이지 않도록 `project_id`를 수집·청크·검색 단계에서 강제합니다.
+
+주요 제품·기술 결정은 [docs/DECISIONS.md](docs/DECISIONS.md), 개발 순서와 완료 기준은 [docs/ROADMAP.md](docs/ROADMAP.md), 출시별 변경 사항은 [CHANGELOG.md](CHANGELOG.md)에 기록합니다.
+
+## Features
 
 - 프로젝트 생성과 전환
 - PDF·DOCX·TXT·MD 일반 업로드
@@ -20,14 +36,54 @@
 - 답변별 원본·위치·관련도 표시
 - 원본 문서 및 인덱스 삭제
 
-## 가장 빠른 실행 방법
+## Tech Stack
+
+| Layer | Technology |
+|---|---|
+| Backend | Python 3.12, FastAPI |
+| Database | PostgreSQL 17, pgvector |
+| ORM | SQLAlchemy 2 |
+| AI | OpenAI Responses API, Embeddings API |
+| Local fallback | 결정적 로컬 임베딩, 추출형 답변 |
+| Connectors | Notion API, Gmail API OAuth 2.0 |
+| Parsing | PDF, DOCX, TXT, Markdown |
+| Frontend | HTML, CSS, Vanilla JavaScript |
+| Runtime | Docker Compose |
+| Tests | pytest |
+
+## Project Structure
+
+```text
+app/
+├── connectors/        # Notion·Gmail 연결
+├── services/          # 수집·파싱·청킹·임베딩·검색·보안
+├── static/            # 웹·모바일 반응형 UI
+├── main.py            # FastAPI 엔드포인트
+├── models.py          # 프로젝트·문서·청크·연결정보 모델
+└── schemas.py         # API 요청·응답 스키마
+docs/
+├── DECISIONS.md       # 주요 아키텍처 결정
+└── ROADMAP.md         # 단계별 개발 계획과 완료 기준
+sample-data/           # 비식별 테스트 자료
+tests/                 # API·파서·연결·보안 테스트
+```
+
+## Installation
 
 필수 프로그램:
 
 - Docker Desktop
 - VS Code
 
-압축을 푼 폴더를 VS Code에서 열고 터미널에서 실행합니다.
+저장소를 내려받고 프로젝트 폴더를 VS Code에서 엽니다.
+
+```bash
+git clone https://github.com/creativeflow-labs/project-brain.git
+cd project-brain
+cp .env.example .env
+```
+
+터미널에서 실행합니다.
 
 ```bash
 docker compose up --build
@@ -52,7 +108,7 @@ http://localhost:8000
 
 기본 빌드 작업은 `Project Brain: 시작`이며 `⇧⌘B`로 실행할 수 있습니다.
 
-처음에는 `.env`의 `OPENAI_API_KEY`가 비어 있으므로 비용 없이 파일 파싱·검색·출처 표시를 테스트할 수 있습니다. `sample-data/project-onboarding-sample.md`를 업로드하고 다음 질문을 권장합니다.
+처음에는 `.env`의 `OPENAI_API_KEY`가 비어 있으므로 비용 없이 파일 파싱·검색·출처 표시를 테스트할 수 있습니다. `sample-data/project-onboarding-sample.md`를 업로드하고 다음 질문으로 흐름을 확인할 수 있습니다.
 
 ```text
 고객이 2차 시안을 거절한 이유와 현재 확정된 방향, 최종 승인자는 누구인가요?
@@ -72,7 +128,11 @@ docker compose down -v
 
 `-v`는 PostgreSQL 볼륨을 삭제하므로 기존 테스트 데이터가 복구되지 않습니다.
 
-## OpenAI 생성형 답변 활성화
+## Configuration
+
+실제 인증값은 `.env`에만 저장합니다. `.env`, 로컬 암호화 키, 업로드 원본, 데이터베이스 파일은 Git과 Docker 빌드 컨텍스트에서 제외됩니다.
+
+### OpenAI 생성형 답변 활성화
 
 `.env`에서 다음 값을 입력한 뒤 앱을 재시작합니다.
 
@@ -84,7 +144,7 @@ OPENAI_API_KEY=sk-...
 
 키를 바꾼 뒤 기존 문서는 이전 방식으로 생성된 임베딩을 보유합니다. 정확한 비교를 위해 테스트 프로젝트의 문서를 삭제하고 다시 업로드하는 것이 좋습니다.
 
-## Notion 연결
+### Notion 연결
 
 현재 사내 검증에서 한 계정의 접근 범위를 넓게 동기화하려면 Notion 개발자 화면의 `개인 액세스 토큰`을 사용합니다.
 
@@ -106,7 +166,7 @@ OPENAI_API_KEY=sk-...
 
 Notion 공식 Search API는 계정 내 모든 문서의 완전한 열거를 보장하지 않습니다. PAT 모드는 `최선 노력 계정 탐색`, 내부 연결과 향후 OAuth 모드는 `승인된 범위 동기화`로 상태 화면에 구분합니다.
 
-## Gmail 연결
+### Gmail 연결
 
 Gmail은 Google Cloud OAuth 설정이 있어야 합니다.
 
@@ -144,7 +204,7 @@ label:프로젝트명 newer_than:90d
 
 OAuth 범위는 `gmail.readonly`만 사용합니다. 토큰은 PostgreSQL에 Fernet 암호화하여 저장합니다. 프로덕션에서는 환경 변수 대신 Secret Manager 또는 KMS로 이전해야 합니다.
 
-## Docker 없이 로컬 실행
+### Docker 없이 로컬 실행
 
 이 방식은 빠른 코드 디버깅을 위해 SQLite를 사용합니다. 실제 pgvector 흐름은 Docker 실행으로 확인하세요.
 
@@ -158,7 +218,7 @@ UPLOAD_DIR=./data/uploads \
 uvicorn app.main:app --reload
 ```
 
-## 테스트
+## Testing
 
 ```bash
 DATABASE_URL=sqlite:///./data/test_project_brain.db python -m pytest -q
@@ -175,6 +235,7 @@ DATABASE_URL=sqlite:///./data/test_project_brain.db python -m pytest -q
 - Notion 페이지·데이터 소스 자동 발견
 - Notion 속성·본문·하위 페이지 인덱싱
 - Notion 토큰 암호화 저장과 API 응답 비노출
+- Gmail OAuth PKCE 상태 복원·변조 거부·토큰 암호화 저장
 
 ## API 요약
 
@@ -196,7 +257,18 @@ DATABASE_URL=sqlite:///./data/test_project_brain.db python -m pytest -q
 
 Swagger 문서는 `http://localhost:8000/docs`에서 확인할 수 있습니다.
 
-## 현재 MVP 제한
+## Security and Privacy
+
+- `.env`와 외부 서비스 인증 파일은 Git에서 제외
+- Notion·Gmail 토큰은 프로젝트별 Fernet 암호화 저장
+- Gmail OAuth는 PKCE와 만료되는 암호화 상태 사용
+- OpenAI Responses API 호출은 `store=False` 적용
+- 외부 연결은 읽기 전용 권한부터 검증
+- 업로드 원본과 로컬 데이터베이스는 저장소에 포함하지 않음
+
+현재 버전은 로컬 사내 검증용입니다. 사용자 인증, 세부 권한, 고객사별 테넌트 격리, 감사 로그가 구현되기 전에는 인터넷에 공개 배포하지 않습니다.
+
+## Current Limitations
 
 - 스캔 PDF OCR 제외
 - HWP/HWPX, PPTX, XLSX, 이미지, ZIP 제외
@@ -208,14 +280,54 @@ Swagger 문서는 `http://localhost:8000/docs`에서 확인할 수 있습니다.
 - 백그라운드 큐 제외, 요청 안에서 파싱·임베딩 수행
 - 대규모 데이터 최적화 제외. 현재 검색은 프로젝트의 청크를 읽어 애플리케이션에서 재순위화
 - 악성코드 스캔 제외. 외부 공개 전에 ClamAV 또는 별도 검사 계층 필요
+- 질문별 독립 검색으로 이전 대화의 활성 회사·사건·출처 범위를 유지하지 않음
+- 상위 `top_k` 청크 밖의 반대 근거를 추가 탐색하지 않음
+- 노션 블록·이메일 본문을 사건 단위로 재구성하는 문맥 복원 계층 미구현
+- 출처 역할·시점·확정 상태를 비교하는 사실 판정 계층 미구현
 
-이 제한들은 구조적 누락이 아니라 테스트 범위를 빠르게 확보하기 위한 명시적 MVP 경계입니다.
+이 제한은 `v0.2.1` 기준선에 명시적으로 고정합니다. 다음 개발 단계는 신규 접점 확장보다 검색·판정 코어 고도화를 우선합니다.
 
-## 버전 관리
+## Versioning
 
-이 프로젝트는 로컬 Git으로 관리합니다.
+이 프로젝트는 [Semantic Versioning](https://semver.org/)을 따릅니다.
 
-- `v0.1.0`: 페이지 URL을 직접 입력하는 최초 MVP
-- `v0.2.0`: Notion 연결 저장·자동 발견·증분 동기화
+### v0.2.1 — Gmail OAuth 안정화
 
-변경 내용은 [CHANGELOG.md](CHANGELOG.md), 주요 설계 결정은 [docs/DECISIONS.md](docs/DECISIONS.md), 장기 기능 계획은 [docs/ROADMAP.md](docs/ROADMAP.md)에서 확인합니다.
+> Tag: `v0.2.1` | Date: 2026.07.25
+
+- Gmail OAuth PKCE `code_verifier`를 암호화된 일회성 상태로 관리
+- 서버 재시작과 다중 인스턴스에서도 OAuth 상태 복원
+- OAuth 상태 10분 만료와 변조 거부
+- 권한 거부·토큰 교환 실패 사용자 안내
+- 검색 코어 고도화 전 동작 기준선 확정
+
+### v0.2.0 — Notion 지식공간 동기화
+
+> Tag: `v0.2.0` | Date: 2026.07.25
+
+- Notion 연결 저장·접근 범위 자동 발견
+- 증분·자동 동기화
+- 지원 형식 첨부파일 수집
+- 연결 상태와 탐색 불완전성 표시
+
+### v0.1.0 — Initial Local MVP
+
+> Tag: `v0.1.0` | Date: 2026.07.25
+
+- 프로젝트 단위 문서 업로드·검색
+- Notion 페이지 지정 가져오기
+- Gmail 본문·첨부 동기화
+- PostgreSQL·pgvector와 근거 기반 답변 UI
+
+### Branch Strategy
+
+| Branch | Purpose |
+|---|---|
+| `main` | 검증을 통과한 기준 버전 |
+| `develop` | 다음 버전 통합 |
+| `feature/*` | 검색·연결·UI 기능 개발 |
+| `fix/*` | 결함 수정 |
+
+## Repository Policy
+
+이 저장소는 Creative Flow의 비공개 제품 개발 저장소입니다. 별도 공개 결정이나 라이선스 부여 전에는 코드의 복제·배포·재사용을 허용하지 않습니다.

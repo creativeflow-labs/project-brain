@@ -338,8 +338,13 @@ function bindEvents() {
 async function init() {
   bindEvents();
   await Promise.all([loadHealth(), loadProjects()]);
-  if (new URLSearchParams(location.search).get("gmail") === "connected") {
+  const params = new URLSearchParams(location.search);
+  const gmailStatus = params.get("gmail");
+  if (gmailStatus === "connected") {
     toast("Gmail 연결이 완료되었습니다.");
+    history.replaceState({}, "", "/");
+  } else if (gmailStatus === "error") {
+    toast("Gmail 연결에 실패했습니다. 다시 연결해 주세요.", true);
     history.replaceState({}, "", "/");
   }
 }

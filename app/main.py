@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import logging
 import os
 import secrets
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+from cryptography.fernet import InvalidToken
 from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
@@ -49,7 +51,9 @@ from app.services.security import decrypt_json, encrypt_json
 from app.version import APP_VERSION
 
 settings = get_settings()
-oauth_states: dict[str, str] = {}
+logger = logging.getLogger(__name__)
+
+GMAIL_OAUTH_STATE_TTL_SECONDS = 600
 
 
 async def notion_scheduler_loop() -> None:
@@ -275,7 +279,10 @@ def _google_client_config() -> dict:
     }
 
 
-def _google_flow(state: str | None = None) -> Flow:
+def _google_flow(
+    state: str | None = None,
+    code_verifier: str | None = None,
+) -> Flow:
     if settings.google_redirect_uri.startswith("http://localhost"):
         os.environ["OAUTHLIB_INSECURE_TRANSPORT"] = "1"
     return Flow.from_client_config(
@@ -283,15 +290,23 @@ def _google_flow(state: str | None = None) -> Flow:
         scopes=GMAIL_SCOPES,
         state=state,
         redirect_uri=settings.google_redirect_uri,
+        code_verifier=code_verifier,
+        autogenerate_code_verifier=False,
     )
 
 
 @app.get("/api/connectors/gmail/auth-url")
 def gmail_auth_url(project_id: str, db: Session = Depends(get_db)):
     require_project(db, project_id)
-    state = secrets.token_urlsafe(32)
-    oauth_states[state] = project_id
-    flow = _google_flow(state)
+    code_verifier = secrets.token_urlsafe(64)
+    state = encrypt_json(
+        {
+            "provider": "gmail",
+            "project_id": project_id,
+            "code_verifier": code_verifier,
+        }
+    )
+    flow = _google_flow(state=state, code_verifier=code_verifier)
     authorization_url, _ = flow.authorization_url(
         access_type="offline", include_granted_scopes="true", prompt="consent"
     )
@@ -299,13 +314,48 @@ def gmail_auth_url(project_id: str, db: Session = Depends(get_db)):
 
 
 @app.get("/api/connectors/gmail/callback")
-def gmail_callback(state: str, code: str, db: Session = Depends(get_db)):
-    project_id = oauth_states.pop(state, None)
-    if not project_id:
-        raise HTTPException(status_code=400, detail="OAuth 상태가 만료되었거나 유효하지 않습니다.")
+def gmail_callback(
+    state: str,
+    code: str | None = None,
+    error: str | None = None,
+    db: Session = Depends(get_db),
+):
+    if error or not code:
+        return RedirectResponse(
+            url="/?gmail=error&reason=access_denied", status_code=303
+        )
+
+    try:
+        oauth_payload = decrypt_json(
+            state, ttl_seconds=GMAIL_OAUTH_STATE_TTL_SECONDS
+        )
+    except (InvalidToken, ValueError, TypeError):
+        return RedirectResponse(
+            url="/?gmail=error&reason=invalid_state", status_code=303
+        )
+
+    project_id = oauth_payload.get("project_id")
+    code_verifier = oauth_payload.get("code_verifier")
+    provider = oauth_payload.get("provider")
+    if (
+        provider != "gmail"
+        or not isinstance(project_id, str)
+        or not isinstance(code_verifier, str)
+    ):
+        return RedirectResponse(
+            url="/?gmail=error&reason=invalid_state", status_code=303
+        )
+
     require_project(db, project_id)
-    flow = _google_flow(state)
-    flow.fetch_token(code=code)
+    flow = _google_flow(state=state, code_verifier=code_verifier)
+    try:
+        flow.fetch_token(code=code)
+    except Exception:
+        logger.exception("Gmail OAuth 토큰 교환에 실패했습니다.")
+        return RedirectResponse(
+            url="/?gmail=error&reason=token_exchange", status_code=303
+        )
+
     encrypted = encrypt_json(credentials_to_dict(flow.credentials))
     credential = db.scalar(
         select(ConnectorCredential).where(
@@ -322,7 +372,7 @@ def gmail_callback(state: str, code: str, db: Session = Depends(get_db)):
             )
         )
     db.commit()
-    return RedirectResponse(url="/?gmail=connected")
+    return RedirectResponse(url="/?gmail=connected", status_code=303)
 
 
 @app.post("/api/connectors/gmail/sync")

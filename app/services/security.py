@@ -39,5 +39,9 @@ def encrypt_json(payload: dict) -> str:
     return _fernet().encrypt(json.dumps(payload).encode("utf-8")).decode("utf-8")
 
 
-def decrypt_json(payload: str) -> dict:
-    return json.loads(_fernet().decrypt(payload.encode("utf-8")).decode("utf-8"))
+def decrypt_json(payload: str, ttl_seconds: int | None = None) -> dict:
+    decrypted = _fernet().decrypt(
+        payload.encode("utf-8"),
+        ttl=ttl_seconds,
+    )
+    return json.loads(decrypted.decode("utf-8"))
