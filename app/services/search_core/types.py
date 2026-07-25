@@ -1,0 +1,60 @@
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Literal, TypedDict
+
+from sqlalchemy.orm import Session
+
+from app.models import Chunk, ConversationMessage, Document
+
+EvidenceStatus = Literal["supported", "conflict", "insufficient"]
+
+
+@dataclass
+class QueryPlan:
+    original_question: str
+    resolved_question: str
+    search_queries: list[str]
+    entity_terms: list[str] = field(default_factory=list)
+    requested_field: str = "general"
+
+
+@dataclass
+class SearchCandidate:
+    chunk: Chunk
+    document: Document
+    score: float
+    vector_score: float = 0.0
+    lexical_score: float = 0.0
+    exact_score: float = 0.0
+
+
+@dataclass
+class EvidencePacket:
+    document: Document
+    anchor_chunks: list[Chunk]
+    context_text: str
+    score: float
+    matched_queries: list[str] = field(default_factory=list)
+
+
+@dataclass
+class EvidenceAssessment:
+    status: EvidenceStatus
+    answer: str
+    cited_document_ids: list[str]
+    conflicts: list[str] = field(default_factory=list)
+    retry_queries: list[str] = field(default_factory=list)
+
+
+class SearchState(TypedDict, total=False):
+    db: Session
+    project_id: str
+    question: str
+    history: list[ConversationMessage]
+    top_k: int
+    plan: QueryPlan
+    packets: list[EvidencePacket]
+    assessment: EvidenceAssessment
+    retry_count: int
+    candidate_count: int

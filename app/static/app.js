@@ -1,4 +1,8 @@
-const state = { projects: [], projectId: localStorage.getItem("projectBrainProjectId") || "" };
+const state = {
+  projects: [],
+  projectId: localStorage.getItem("projectBrainProjectId") || "",
+  threadIds: {}
+};
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
 
@@ -152,8 +156,14 @@ async function askQuestion(event) {
   try {
     const result = await api("/api/ask", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ project_id: state.projectId, question, top_k: 6 })
+      body: JSON.stringify({
+        project_id: state.projectId,
+        question,
+        top_k: 6,
+        thread_id: state.threadIds[state.projectId] || null
+      })
     });
+    state.threadIds[state.projectId] = result.thread_id;
     pending.querySelector(".bubble").textContent = result.answer;
     renderEvidence(result.citations);
   } catch (error) {
@@ -298,6 +308,7 @@ function bindEvents() {
   }));
   $("#project-select").addEventListener("change", async event => {
     state.projectId = event.target.value;
+    delete state.threadIds[state.projectId];
     localStorage.setItem("projectBrainProjectId", state.projectId);
     $("#messages").innerHTML = `<div class="empty-chat"><div class="spark">✦</div><h2>새 프로젝트의 기억을 불러왔습니다.</h2><p>등록된 자료를 바탕으로 질문해 보세요.</p></div>`;
     renderEvidence([]);

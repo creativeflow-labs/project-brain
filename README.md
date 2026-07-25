@@ -6,7 +6,7 @@ Notion, Gmail, 일반 문서를 프로젝트 단위로 연결하고 원문 근�
 
 Project Brain은 흩어진 프로젝트 기록을 연결해 무엇이 왜 결정됐고, 현재 어떤 정보가 근거가 되는지 설명하는 읽기 전용 AI 비서를 지향합니다. 단순한 전사 검색보다 팀과 프로젝트에 밀착된 맥락, 출처, 변경 이력을 정확하게 다루는 것이 제품의 핵심입니다.
 
-현재 `v0.2.1`은 데이터 연결과 로컬 실행 흐름이 동작하는 기술 기준선입니다. 검색 코어는 초기형 하이브리드 RAG이며, 대화 상태·문맥 복원·상충 정보 판정은 다음 버전에서 고도화합니다.
+`v0.2.1`은 데이터 연결과 로컬 실행 흐름의 보존 기준선입니다. 현재 개발 브랜치의 `v0.3.0-alpha.1`은 이 구조를 유지하면서 대화 상태, 하이브리드 후보 검색, 부모·스레드 문맥 복원, 상충 근거 판정을 추가한 검색 코어 검증 버전입니다.
 
 ### Core Experience
 
@@ -30,7 +30,11 @@ Project Brain은 흩어진 프로젝트 기록을 연결해 무엇이 왜 결정
 - Notion 접근 범위 자동 발견·증분 동기화와 지원 형식 첨부파일 가져오기
 - Gmail 본문과 지원 형식 첨부파일 동기화
 - PostgreSQL 17 + pgvector 저장
-- 의미 유사도와 키워드 중첩을 결합한 프로젝트 단위 검색
+- 의미 검색, BM25, 정확 일치, 제목·메타데이터를 결합한 프로젝트 단위 검색
+- 후속 질문의 대상 복원과 독립형 검색 질문 생성
+- Notion 부모 페이지와 Gmail 동일 스레드 문맥 복원
+- 지원됨·충돌·근거 부족 내부 판정과 제한 재검색
+- 검색 계획·근거 문서·판정 상태 추적
 - OpenAI Responses API 기반 근거 종합 답변
 - OpenAI 키가 없을 때 로컬 임베딩과 추출형 답변
 - 답변별 원본·위치·관련도 표시
@@ -44,6 +48,7 @@ Project Brain은 흩어진 프로젝트 기록을 연결해 무엇이 왜 결정
 | Database | PostgreSQL 17, pgvector |
 | ORM | SQLAlchemy 2 |
 | AI | OpenAI Responses API, Embeddings API |
+| Search workflow | LangGraph 1.2 |
 | Local fallback | 결정적 로컬 임베딩, 추출형 답변 |
 | Connectors | Notion API, Gmail API OAuth 2.0 |
 | Parsing | PDF, DOCX, TXT, Markdown |
@@ -57,6 +62,7 @@ Project Brain은 흩어진 프로젝트 기록을 연결해 무엇이 왜 결정
 app/
 ├── connectors/        # Notion·Gmail 연결
 ├── services/          # 수집·파싱·청킹·임베딩·검색·보안
+│   └── search_core/   # 질문 계획·하이브리드 검색·문맥 복원·근거 판정
 ├── static/            # 웹·모바일 반응형 UI
 ├── main.py            # FastAPI 엔드포인트
 ├── models.py          # 프로젝트·문서·청크·연결정보 모델
@@ -256,6 +262,8 @@ DATABASE_URL=sqlite:///./data/test_project_brain.db python -m pytest -q
 | `POST` | `/api/connectors/gmail/sync` | Gmail 본문·첨부 동기화 |
 
 Swagger 문서는 `http://localhost:8000/docs`에서 확인할 수 있습니다.
+
+`POST /api/ask`는 기존 필드와 호환되며 선택적으로 `thread_id`를 받습니다. 응답의 `thread_id`를 다음 질문에 보내면 후속 질문의 생략된 프로젝트·사건 문맥을 복원합니다. 응답에는 내부 근거 상태인 `evidence_status`, 독립형 질문 `resolved_question`, 실행 추적 ID `trace_id`, 충돌 설명 `conflicts`도 포함됩니다.
 
 ## Security and Privacy
 

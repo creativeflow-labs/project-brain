@@ -35,6 +35,7 @@ class AskRequest(BaseModel):
     project_id: str
     question: str = Field(min_length=2, max_length=2000)
     top_k: int = Field(default=6, ge=1, le=12)
+    thread_id: str | None = None
 
 
 class Citation(BaseModel):
@@ -51,6 +52,11 @@ class AskResponse(BaseModel):
     answer: str
     mode: str
     citations: list[Citation]
+    thread_id: str
+    evidence_status: Literal["supported", "conflict", "insufficient"]
+    resolved_question: str
+    trace_id: str
+    conflicts: list[str] = Field(default_factory=list)
 
 
 class NotionImportRequest(BaseModel):

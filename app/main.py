@@ -190,7 +190,15 @@ async def upload_document(
 def ask(payload: AskRequest, db: Session = Depends(get_db)):
     require_project(db, payload.project_id)
     try:
-        return answer_question(db, payload.project_id, payload.question, payload.top_k)
+        return answer_question(
+            db,
+            payload.project_id,
+            payload.question,
+            payload.top_k,
+            payload.thread_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"답변 생성에 실패했습니다: {exc}") from exc
 
