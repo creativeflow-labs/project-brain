@@ -21,6 +21,7 @@ class Settings(BaseSettings):
     search_compose_evidence_limit: int = 8
     search_scoped_record_limit: int = 100
     search_parent_max_chars: int = 12000
+    search_total_evidence_max_chars: int = 80000
     search_history_messages: int = 8
     search_max_retries: int = 1
 

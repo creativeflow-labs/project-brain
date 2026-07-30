@@ -152,3 +152,4 @@ class SearchState(TypedDict, total=False):
     assessment: EvidenceAssessment
     retry_count: int
     candidate_count: int
+    timings_ms: dict[str, float]

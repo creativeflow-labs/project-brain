@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import json
-import math
 import re
 from collections import Counter, defaultdict
+from dataclasses import replace
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 
@@ -14,52 +14,16 @@ from app.config import get_settings
 from app.models import Chunk, Document
 from app.services.embeddings import embedding_service
 from app.services.record_metadata import infer_record_type
+from app.services.search_core.candidate_store import load_candidate_rows
+from app.services.search_core.scoring import (
+    BM25Corpus,
+    cosine_with_norms,
+    tokenize,
+    vector_norm,
+)
 from app.services.search_core.types import EvidencePacket, QueryPlan, SearchCandidate
 
 settings = get_settings()
-
-KOREAN_SUFFIXES = (
-    "에서는",
-    "으로",
-    "에서",
-    "에게",
-    "까지",
-    "부터",
-    "처럼",
-    "인가요",
-    "이야",
-    "이에요",
-    "예요",
-    "의",
-    "은",
-    "는",
-    "이",
-    "가",
-    "을",
-    "를",
-    "와",
-    "과",
-    "에",
-    "도",
-    "로",
-)
-STOP_WORDS = {
-    "그리고",
-    "그러나",
-    "대한",
-    "관련",
-    "알려줘",
-    "무엇",
-    "누구",
-    "얼마",
-    "그럼",
-    "후속",
-    "질문",
-    "the",
-    "and",
-    "for",
-    "from",
-}
 
 DATE_KEYS = {
     "published_at": (
@@ -83,61 +47,6 @@ DATE_KEYS = {
         "received_at",
     ),
 }
-
-
-def _tokens(text: str) -> list[str]:
-    tokens: list[str] = []
-    for raw in re.findall(r"[가-힣]+|[a-zA-Z0-9][a-zA-Z0-9._-]*", text.lower()):
-        if len(raw) < 2 or raw in STOP_WORDS:
-            continue
-        tokens.append(raw)
-        if re.fullmatch(r"[가-힣]+", raw):
-            for suffix in KOREAN_SUFFIXES:
-                if raw.endswith(suffix) and len(raw) - len(suffix) >= 2:
-                    tokens.append(raw[: -len(suffix)])
-                    break
-    return tokens
-
-
-def _cosine(left: list[float], right: list[float]) -> float:
-    dot = sum(a * b for a, b in zip(left, right, strict=False))
-    left_norm = math.sqrt(sum(value * value for value in left)) or 1.0
-    right_norm = math.sqrt(sum(value * value for value in right)) or 1.0
-    return dot / (left_norm * right_norm)
-
-
-def _bm25(
-    query_tokens: list[str],
-    document_tokens: list[list[str]],
-) -> list[float]:
-    if not query_tokens or not document_tokens:
-        return [0.0] * len(document_tokens)
-    counts = [Counter(tokens) for tokens in document_tokens]
-    average_length = (
-        sum(len(tokens) for tokens in document_tokens) / len(document_tokens)
-    ) or 1.0
-    document_frequency = Counter(
-        token for counter in counts for token in set(counter) if token in query_tokens
-    )
-    scores: list[float] = []
-    for tokens, counter in zip(document_tokens, counts, strict=True):
-        score = 0.0
-        for token in set(query_tokens):
-            frequency = counter.get(token, 0)
-            if not frequency:
-                continue
-            inverse_frequency = math.log(
-                1
-                + (len(document_tokens) - document_frequency[token] + 0.5)
-                / (document_frequency[token] + 0.5)
-            )
-            denominator = frequency + 1.5 * (
-                1 - 0.75 + 0.75 * len(tokens) / average_length
-            )
-            score += inverse_frequency * (frequency * 2.5) / denominator
-        scores.append(score)
-    maximum = max(scores, default=0.0)
-    return [score / maximum if maximum else 0.0 for score in scores]
 
 
 def _row_text(chunk: Chunk, document: Document) -> str:
@@ -296,11 +205,8 @@ def _row_matches_time_range(chunk: Chunk, document: Document, plan: QueryPlan) -
 def retrieve_candidates(
     db: Session, project_id: str, plan: QueryPlan
 ) -> list[SearchCandidate]:
-    rows = db.execute(
-        select(Chunk, Document)
-        .join(Document, Chunk.document_id == Document.id)
-        .where(Chunk.project_id == project_id)
-    ).all()
+    embeddings = embedding_service.embed_queries(plan.search_queries)
+    rows = load_candidate_rows(db, project_id, plan, embeddings)
     scoped_ids = _scoped_document_ids(rows, plan)
     rows = [(chunk, document) for chunk, document in rows if document.id in scoped_ids]
     if plan.time_start is not None and plan.time_end is not None:
@@ -313,26 +219,40 @@ def retrieve_candidates(
         return []
 
     texts = [_row_text(chunk, document) for chunk, document in rows]
-    tokenized = [_tokens(text) for text in texts]
-    embeddings = embedding_service.embed_many(plan.search_queries)
+    lowered_texts = [text.lower() for text in texts]
+    lowered_titles = [document.title.lower() for _, document in rows]
+    bm25_corpus = BM25Corpus.from_texts(texts)
+    vectors = [list(chunk.embedding or []) for chunk, _ in rows]
+    vector_norms = [vector_norm(vector) if vector else 1.0 for vector in vectors]
     reciprocal_scores: defaultdict[int, float] = defaultdict(float)
     vector_best: defaultdict[int, float] = defaultdict(float)
     lexical_best: defaultdict[int, float] = defaultdict(float)
     exact_best: defaultdict[int, float] = defaultdict(float)
 
     for query, query_embedding in zip(plan.search_queries, embeddings, strict=True):
-        query_tokens = _tokens(query)
-        lexical_scores = _bm25(query_tokens, tokenized)
+        query_tokens = tokenize(query)
+        lexical_scores = bm25_corpus.scores(query_tokens)
         vector_scores: list[float] = []
         exact_scores: list[float] = []
         normalized_query = re.sub(r"\s+", " ", query.lower()).strip()
-        for index, ((chunk, document), text) in enumerate(zip(rows, texts, strict=True)):
-            vector = list(chunk.embedding or [])
+        query_norm = vector_norm(query_embedding)
+        for index, (vector, lowered, title) in enumerate(
+            zip(vectors, lowered_texts, lowered_titles, strict=True)
+        ):
             vector_score = (
-                (_cosine(query_embedding, vector) + 1.0) / 2.0 if vector else 0.0
+                (
+                    cosine_with_norms(
+                        query_embedding,
+                        vector,
+                        query_norm,
+                        vector_norms[index],
+                    )
+                    + 1.0
+                )
+                / 2.0
+                if vector
+                else 0.0
             )
-            lowered = text.lower()
-            title = document.title.lower()
             entity_hits = sum(
                 1 for term in plan.entity_terms if term and term in lowered
             )
@@ -372,7 +292,17 @@ def retrieve_candidates(
         )
         combined.append((index, min(score, 1.0)))
 
-    combined.sort(key=lambda item: item[1], reverse=True)
+    combined.sort(
+        key=lambda item: (
+            -item[1],
+            -exact_best[item[0]],
+            -lexical_best[item[0]],
+            -vector_best[item[0]],
+            rows[item[0]][1].id,
+            rows[item[0]][0].position,
+            rows[item[0]][0].id,
+        )
+    )
     candidates: list[SearchCandidate] = []
     selected_combined = combined[: settings.search_rerank_limit]
     if plan.cardinality == "all":
@@ -451,6 +381,16 @@ def _expanded_document_text(
     return text
 
 
+def _trim_context(text: str, max_chars: int) -> str:
+    if len(text) <= max_chars:
+        return text
+    marker = "\n\n[…관련성이 낮은 중간 문맥 생략…]\n\n"
+    available = max(1, max_chars - len(marker))
+    head_size = int(available * 0.75)
+    tail_size = available - head_size
+    return f"{text[:head_size].rstrip()}{marker}{text[-tail_size:].lstrip()}"
+
+
 def build_evidence_packets(
     db: Session,
     project_id: str,
@@ -478,7 +418,10 @@ def build_evidence_packets(
             select(Document).where(
                 Document.project_id == project_id,
                 Document.source_type == "gmail",
-            )
+                Document.metadata_json["thread_id"].as_string().in_(
+                    sorted(thread_scores)
+                ),
+            ).order_by(Document.id)
         ).all()
         for document in gmail_documents:
             thread_id = (document.metadata_json or {}).get("thread_id")
@@ -521,7 +464,7 @@ def build_evidence_packets(
                 matched_queries=[
                     query
                     for query in plan.search_queries
-                    if set(_tokens(query)) & set(_tokens(context_text))
+                    if set(tokenize(query)) & set(tokenize(context_text))
                 ],
             )
         )
@@ -568,7 +511,14 @@ def build_evidence_packets(
     if packets:
         best_score = packets[0].score
         selected_ids = {packet.document.id for packet in selected}
-        for source_type in {packet.document.source_type for packet in packets}:
+        selected_sources = Counter(
+            packet.document.source_type for packet in selected
+        )
+        for source_type in sorted(
+            {packet.document.source_type for packet in packets}
+        ):
+            if selected_sources[source_type] > 0:
+                continue
             source_best = next(
                 packet
                 for packet in packets
@@ -579,9 +529,38 @@ def build_evidence_packets(
                 and source_best.score >= best_score * 0.35
             ):
                 if len(selected) >= limit:
-                    selected[-1] = source_best
+                    replacement_index = next(
+                        (
+                            index
+                            for index in range(len(selected) - 1, -1, -1)
+                            if selected_sources[
+                                selected[index].document.source_type
+                            ]
+                            > 1
+                        ),
+                        None,
+                    )
+                    if replacement_index is None:
+                        continue
+                    removed = selected[replacement_index]
+                    selected[replacement_index] = source_best
+                    selected_ids.discard(removed.document.id)
+                    selected_sources[removed.document.source_type] -= 1
                 else:
                     selected.append(source_best)
                 selected_ids.add(source_best.document.id)
+                selected_sources[source_type] += 1
     selected.sort(key=lambda packet: packet.score, reverse=True)
-    return selected
+    if not selected:
+        return []
+    per_packet_limit = min(
+        settings.search_parent_max_chars,
+        max(2000, settings.search_total_evidence_max_chars // len(selected)),
+    )
+    return [
+        replace(
+            packet,
+            context_text=_trim_context(packet.context_text, per_packet_limit),
+        )
+        for packet in selected
+    ]

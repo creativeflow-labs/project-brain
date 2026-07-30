@@ -3,9 +3,8 @@ from __future__ import annotations
 import json
 import re
 
-from openai import OpenAI
-
 from app.config import get_settings
+from app.services.openai_client import get_openai_client
 from app.services.search_core.types import (
     AnswerFact,
     AnswerReport,
@@ -432,7 +431,10 @@ def _llm_assessment(
         "additionalProperties": False,
     }
     try:
-        response = OpenAI(api_key=settings.openai_api_key).responses.create(
+        client = get_openai_client()
+        if client is None:
+            return None
+        response = client.responses.create(
             model=settings.openai_chat_model,
             reasoning={"effort": "none"},
             store=False,

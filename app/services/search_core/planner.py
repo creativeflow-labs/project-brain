@@ -3,13 +3,13 @@ from __future__ import annotations
 import json
 import re
 from calendar import monthrange
+from dataclasses import replace
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from openai import OpenAI
-
 from app.config import get_settings
 from app.models import ConversationMessage
+from app.services.openai_client import get_openai_client
 from app.services.search_core.types import QueryPlan
 
 settings = get_settings()
@@ -346,34 +346,67 @@ def _apply_request_contract(
         scope_mode = "open"
         locked_entities = []
 
-    plan.task_mode = task_mode
-    plan.scope_mode = scope_mode
-    plan.locked_entity_terms = locked_entities
-    if task_mode == "compose":
-        plan.is_state_query = False
-
     # 회사명이 없는 협업 템플릿 요청은 특정 브랜드를 임의 선택하지 않고,
     # 동일한 고정 쿼리로 관련 제안들의 공통 패턴을 수집합니다.
     if task_mode == "compose" and scope_mode == "collection":
-        plan.cardinality = "all"
-        plan.entity_terms = ["협업", "제안", "메일", "파트너십"]
-        plan.search_queries = [
-            question.strip(),
-            "협업 제안 메일",
-            "파트너십 제안 이메일",
-            "협업 제안 회신 조건 보상 일정 산출물 권한",
-        ]
-        plan.retrieval_mode = "hybrid"
-        plan.record_type = None
-    return plan
+        return replace(
+            plan,
+            task_mode=task_mode,
+            scope_mode=scope_mode,
+            locked_entity_terms=locked_entities,
+            is_state_query=False,
+            cardinality="all",
+            entity_terms=["협업", "제안", "메일", "파트너십"],
+            search_queries=[
+                question.strip(),
+                "협업 제안 메일",
+                "파트너십 제안 이메일",
+                "협업 제안 회신 조건 보상 일정 산출물 권한",
+            ],
+            retrieval_mode="hybrid",
+            record_type=None,
+        )
+    return replace(
+        plan,
+        task_mode=task_mode,
+        scope_mode=scope_mode,
+        locked_entity_terms=locked_entities,
+        is_state_query=False if task_mode == "compose" else plan.is_state_query,
+    )
+
+
+def _can_use_deterministic_plan(question: str) -> bool:
+    task_mode = _task_mode(question)
+    explicit_entities = _explicit_entity_terms(question)
+    if (
+        task_mode == "answer"
+        and explicit_entities
+        and _requested_field(question) in {"contact", "money"}
+    ):
+        return True
+    if (
+        task_mode == "compose"
+        and _collaboration_collection_question(question)
+        and not explicit_entities
+    ):
+        return True
+
+    time_start, _ = _time_range(question)
+    return bool(
+        time_start is not None
+        and _cardinality(question, time_start) == "all"
+        and _record_type(question) is not None
+    )
 
 
 def extend_plan_for_retry(plan: QueryPlan, retry_queries: list[str]) -> QueryPlan:
     if plan.task_mode != "compose":
-        plan.search_queries = list(
-            dict.fromkeys([*plan.search_queries, *retry_queries])
+        return replace(
+            plan,
+            search_queries=list(
+                dict.fromkeys([*plan.search_queries, *retry_queries])
+            ),
         )
-        return plan
 
     # 작성형 전체 종합은 이미 여러 문서를 모으므로 모델이 제안한 특정 회사명으로
     # 재검색하지 않습니다. 특정 대상 작성은 최초에 잠근 대상만 사용합니다.
@@ -387,8 +420,11 @@ def extend_plan_for_retry(plan: QueryPlan, retry_queries: list[str]) -> QueryPla
         ]
     ).strip()
     if locked_query:
-        plan.search_queries = list(
-            dict.fromkeys([*plan.search_queries, locked_query])
+        return replace(
+            plan,
+            search_queries=list(
+                dict.fromkeys([*plan.search_queries, locked_query])
+            ),
         )
     return plan
 
@@ -530,7 +566,10 @@ def _llm_plan(
         "additionalProperties": False,
     }
     try:
-        response = OpenAI(api_key=settings.openai_api_key).responses.create(
+        client = get_openai_client()
+        if client is None:
+            return None
+        response = client.responses.create(
             model=settings.openai_chat_model,
             reasoning={"effort": "none"},
             store=False,
@@ -617,5 +656,8 @@ def _llm_plan(
 def plan_queries(
     question: str, history: list[ConversationMessage]
 ) -> QueryPlan:
-    plan = _llm_plan(question, history) or _fallback_plan(question, history)
+    if _can_use_deterministic_plan(question):
+        plan = _fallback_plan(question, history)
+    else:
+        plan = _llm_plan(question, history) or _fallback_plan(question, history)
     return _apply_request_contract(plan, question, history)

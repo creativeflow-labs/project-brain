@@ -1,4 +1,5 @@
 from app.models import ConversationMessage
+from app.services.search_core import planner
 from app.services.search_core.planner import extend_plan_for_retry, plan_queries
 
 
@@ -56,6 +57,35 @@ def test_generic_collaboration_template_uses_deterministic_collection_contract()
         "파트너십 제안 이메일",
         "협업 제안 회신 조건 보상 일정 산출물 권한",
     ]
+
+
+def test_deterministic_collections_skip_llm_planning(monkeypatch):
+    def fail_if_called(*_args, **_kwargs):
+        raise AssertionError("deterministic collection must not call the LLM planner")
+
+    monkeypatch.setattr(planner, "_llm_plan", fail_if_called)
+
+    template = plan_queries("협업 제안 답장 템플릿을 작성해줘.", [])
+    june_videos = plan_queries(
+        "2026년 6월 크랩 유튜브 영상 제목과 업로드 시간을 전부 알려줘.", []
+    )
+
+    assert template.scope_mode == "collection"
+    assert june_videos.retrieval_mode == "scoped"
+
+
+def test_explicit_contact_and_money_questions_skip_llm_planning(monkeypatch):
+    def fail_if_called(*_args, **_kwargs):
+        raise AssertionError("explicit fact lookup must not call the LLM planner")
+
+    monkeypatch.setattr(planner, "_llm_plan", fail_if_called)
+
+    contact = plan_queries("MagicLight.AI 협업 담당자는 누구야?", [])
+    money = plan_queries("MagicLight.AI 유료 협업비용이 얼마야?", [])
+
+    assert contact.requested_field == "contact"
+    assert money.requested_field == "money"
+    assert contact.scope_mode == money.scope_mode == "entity"
 
 
 def test_explicit_brand_template_locks_entity_scope():

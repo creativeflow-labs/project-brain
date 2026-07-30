@@ -14,8 +14,8 @@ def test_home_forces_fresh_versioned_static_assets():
 
     assert response.status_code == 200
     assert response.headers["cache-control"] == "no-store"
-    assert "/static/styles.css?v=0.5.1-alpha.1" in response.text
-    assert "/static/app.js?v=0.5.1-alpha.1" in response.text
+    assert "/static/styles.css?v=0.5.2-alpha.1" in response.text
+    assert "/static/app.js?v=0.5.2-alpha.1" in response.text
 
 
 def test_user_message_bubble_is_anchored_to_the_right_edge():
@@ -206,6 +206,13 @@ def test_follow_up_restores_subject_and_compares_cross_source_evidence():
             trace = db.get(SearchTrace, first_payload["trace_id"])
             assert trace is not None
             assert trace.trace_json["retry_count"] == 0
+            assert set(trace.trace_json["timings_ms"]) == {
+                "plan",
+                "retrieve_candidates",
+                "build_evidence",
+                "state",
+                "assess",
+            }
 
         follow_up = client.post(
             "/api/ask",

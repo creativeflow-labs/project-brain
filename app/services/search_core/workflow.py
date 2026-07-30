@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from time import perf_counter
+
 from langgraph.graph import END, START, StateGraph
 
 from app.config import get_settings
@@ -16,32 +18,64 @@ from app.services.search_core.types import SearchState
 settings = get_settings()
 
 
+def _updated_timings(
+    state: SearchState, step: str, started_at: float
+) -> dict[str, float]:
+    timings = dict(state.get("timings_ms", {}))
+    elapsed_ms = (perf_counter() - started_at) * 1000
+    timings[step] = round(timings.get(step, 0.0) + elapsed_ms, 2)
+    return timings
+
+
 def _plan_node(state: SearchState) -> dict:
-    return {"plan": plan_queries(state["question"], state["history"])}
+    started_at = perf_counter()
+    plan = plan_queries(state["question"], state["history"])
+    return {
+        "plan": plan,
+        "timings_ms": _updated_timings(state, "plan", started_at),
+    }
 
 
 def _retrieve_node(state: SearchState) -> dict:
+    retrieve_started_at = perf_counter()
     candidates = retrieve_candidates(state["db"], state["project_id"], state["plan"])
+    timings = _updated_timings(state, "retrieve_candidates", retrieve_started_at)
+    evidence_started_at = perf_counter()
     packets = build_evidence_packets(
         state["db"], state["project_id"], state["plan"], candidates
     )
-    return {"packets": packets, "candidate_count": len(candidates)}
+    timing_state = dict(state)
+    timing_state["timings_ms"] = timings
+    return {
+        "packets": packets,
+        "candidate_count": len(candidates),
+        "timings_ms": _updated_timings(
+            timing_state, "build_evidence", evidence_started_at
+        ),
+    }
 
 
 def _assess_node(state: SearchState) -> dict:
+    started_at = perf_counter()
     collection_assessment = assess_scoped_collection(
         state["plan"], state["packets"]
     )
+    assessment = collection_assessment or assess_evidence(
+        state["plan"], state["packets"], state.get("current_state")
+    )
     return {
-        "assessment": collection_assessment
-        or assess_evidence(
-            state["plan"], state["packets"], state.get("current_state")
-        )
+        "assessment": assessment,
+        "timings_ms": _updated_timings(state, "assess", started_at),
     }
 
 
 def _state_node(state: SearchState) -> dict:
-    return {"current_state": assess_current_state(state["plan"], state["packets"])}
+    started_at = perf_counter()
+    current_state = assess_current_state(state["plan"], state["packets"])
+    return {
+        "current_state": current_state,
+        "timings_ms": _updated_timings(state, "state", started_at),
+    }
 
 
 def _route_after_assessment(state: SearchState) -> str:

@@ -177,7 +177,7 @@ def answer_question(
         project_id=project_id,
         status=assessment.status,
         trace_json={
-            "search_core_version": "0.5.1-alpha.1",
+            "search_core_version": "0.5.2-alpha.1",
             "search_queries": plan.search_queries,
             "entity_terms": plan.entity_terms,
             "requested_field": plan.requested_field,
@@ -205,6 +205,7 @@ def answer_question(
             "cited_document_ids": display_document_ids,
             "judgment_document_ids": assessment.cited_document_ids,
             "retry_count": result.get("retry_count", 0),
+            "timings_ms": result.get("timings_ms", {}),
             "current_state": current_state_payload,
             "answer_view": answer_report_payload,
             "citation_snapshot": citation_snapshot,
