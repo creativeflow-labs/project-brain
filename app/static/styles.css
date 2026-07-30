@@ -92,8 +92,10 @@ main { min-width: 0; padding: 0 42px 42px; }
 .primary-button span { color: var(--lime); margin-left: 6px; }
 .message { display: flex; margin-bottom: 18px; }
 .message.user { justify-content: flex-end; }
+.message.user > div { width: 100%; }
 .message.assistant > div { width: 100%; }
 .bubble { max-width: 78%; padding: 14px 16px; border-radius: 14px; white-space: pre-wrap; line-height: 1.62; font-size: 14px; }
+.user .message-label, .user .bubble { width: fit-content; margin-left: auto; }
 .user .bubble { background: var(--green); color: white; border-bottom-right-radius: 4px; }
 .assistant .bubble { background: var(--soft-green); border-bottom-left-radius: 4px; }
 .message-label { font-size: 10px; color: var(--muted); margin-bottom: 5px; font-weight: 750; letter-spacing: .05em; }

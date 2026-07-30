@@ -14,8 +14,18 @@ def test_home_forces_fresh_versioned_static_assets():
 
     assert response.status_code == 200
     assert response.headers["cache-control"] == "no-store"
-    assert "/static/styles.css?v=0.4.0-alpha.4" in response.text
+    assert "/static/styles.css?v=0.4.0-alpha.4-ui1" in response.text
     assert "/static/app.js?v=0.4.0-alpha.4" in response.text
+
+
+def test_user_message_bubble_is_anchored_to_the_right_edge():
+    with TestClient(app) as client:
+        response = client.get("/static/styles.css")
+
+    assert response.status_code == 200
+    assert ".message.user > div { width: 100%; }" in response.text
+    assert ".user .message-label, .user .bubble" in response.text
+    assert "margin-left: auto" in response.text
 
 
 def test_upload_search_and_delete_flow():
