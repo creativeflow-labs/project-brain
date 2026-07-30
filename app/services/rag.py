@@ -156,6 +156,7 @@ def answer_question(
         display_document_ids,
         top_k,
     )
+    answer_report_payload["body"] = answer
 
     if not packets:
         mode = "no_evidence"
@@ -169,10 +170,22 @@ def answer_question(
         project_id=project_id,
         status=assessment.status,
         trace_json={
-            "search_core_version": "0.4.0-alpha.3",
+            "search_core_version": "0.4.0-alpha.4",
             "search_queries": plan.search_queries,
             "entity_terms": plan.entity_terms,
             "requested_field": plan.requested_field,
+            "requested_fields": plan.requested_fields,
+            "cardinality": plan.cardinality,
+            "time_range": (
+                {
+                    "start": plan.time_start.isoformat(),
+                    "end": plan.time_end.isoformat(),
+                    "field": plan.time_field,
+                }
+                if plan.time_start is not None and plan.time_end is not None
+                else None
+            ),
+            "is_state_query": plan.is_state_query,
             "candidate_count": result.get("candidate_count", 0),
             "evidence_document_ids": [
                 packet.document.id for packet in packets

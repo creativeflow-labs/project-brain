@@ -10,6 +10,7 @@ from app.models import Chunk, ConversationMessage, Document
 
 EvidenceStatus = Literal["supported", "conflict", "insufficient"]
 AnswerType = Literal["direct", "conflict", "insufficient", "state"]
+SearchCardinality = Literal["one", "many", "all"]
 FactStatus = Literal[
     "confirmed",
     "conflicting",
@@ -40,6 +41,12 @@ class QueryPlan:
     search_queries: list[str]
     entity_terms: list[str] = field(default_factory=list)
     requested_field: str = "general"
+    requested_fields: list[str] = field(default_factory=list)
+    cardinality: SearchCardinality = "one"
+    time_start: datetime | None = None
+    time_end: datetime | None = None
+    time_field: str | None = None
+    is_state_query: bool = False
 
 
 @dataclass
@@ -106,6 +113,7 @@ class AnswerReport:
     answer_type: AnswerType
     status: EvidenceStatus
     headline: str
+    body: str | None = None
     facts: list[AnswerFact] = field(default_factory=list)
     detail: str | None = None
     next_action: str | None = None

@@ -259,7 +259,7 @@ def _reason_for(event: TimelineEvent) -> str:
 def assess_current_state(
     plan: QueryPlan, packets: list[EvidencePacket]
 ) -> CurrentStateAssessment | None:
-    if plan.requested_field != "status":
+    if not plan.is_state_query:
         return None
 
     events = extract_timeline_events(packets)

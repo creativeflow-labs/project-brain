@@ -4,6 +4,7 @@ from app.services.search_core.reporting import validate_answer_report
 from app.services.search_core.types import (
     AnswerFact,
     AnswerReport,
+    CurrentStateAssessment,
     EvidenceAssessment,
     EvidencePacket,
     QueryPlan,
@@ -179,3 +180,68 @@ def test_report_validator_deduplicates_same_gmail_contact_and_orders_sources():
         "Notion 기록의 Brown 표기에도 이메일 주소는 Emily의 주소로 동일하게 "
         "적혀 있어, 최신 담당자 확인이 필요합니다."
     )
+
+
+def test_cause_question_keeps_adaptive_answer_instead_of_state_report():
+    document = _document("rejection-reason", "notion", "시안 피드백")
+    packet = _packet(document, "타깃 연령대와 맞지 않아 2차 시안이 거절되었습니다.")
+    plan = QueryPlan(
+        original_question="그 프로젝트가 왜 까였어?",
+        resolved_question="그 프로젝트가 왜 거절되었어?",
+        search_queries=["프로젝트 거절 이유"],
+        entity_terms=["프로젝트"],
+        requested_field="status",
+        requested_fields=["reason"],
+        is_state_query=False,
+    )
+    assessment = EvidenceAssessment(
+        status="supported",
+        answer="2차 시안은 타깃 연령대와 맞지 않아 거절되었습니다. [1]",
+        cited_document_ids=[document.id],
+        report=AnswerReport(
+            answer_type="direct",
+            status="supported",
+            headline="2차 시안의 거절 이유를 확인했습니다.",
+            body="2차 시안은 타깃 연령대와 맞지 않아 거절되었습니다. [1]",
+        ),
+    )
+    current_state = CurrentStateAssessment(
+        state="completed",
+        label="완료 확인",
+        evidence_status="supported",
+        as_of=None,
+        reason="완료 기록이 있습니다.",
+        next_action=None,
+    )
+
+    report = validate_answer_report(plan, assessment, [packet], current_state)
+
+    assert report.answer_type == "direct"
+    assert report.body == "2차 시안은 타깃 연령대와 맞지 않아 거절되었습니다. [1]"
+    assert "완료 확인" not in report.body
+
+
+def test_supported_adaptive_body_preserves_requested_document_shape():
+    document = _document("draft-source", "gmail", "협업 제안 메일")
+    packet = _packet(document, "협업 조건을 확인한 뒤 회신해 주세요.")
+    plan = QueryPlan(
+        original_question="답장 메일 초안을 작성해줘.",
+        resolved_question="협업 제안에 답장할 메일 초안을 작성해줘.",
+        search_queries=["협업 제안 메일"],
+    )
+    body = "제목: 협업 제안 회신\n\n안녕하세요.\n제안 내용을 확인했습니다. [1]\n\n감사합니다."
+    assessment = EvidenceAssessment(
+        status="supported",
+        answer=body,
+        cited_document_ids=[document.id],
+        report=AnswerReport(
+            answer_type="direct",
+            status="supported",
+            headline="협업 제안 회신 초안입니다.",
+            body=body,
+        ),
+    )
+
+    report = validate_answer_report(plan, assessment, [packet], None)
+
+    assert report.body == body

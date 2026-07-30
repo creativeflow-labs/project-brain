@@ -207,6 +207,10 @@ def _fallback_assessment(
                 answer_type="insufficient",
                 status="insufficient",
                 headline=_report_headline(plan, "insufficient"),
+                body=(
+                    "현재 연결되고 색인된 프로젝트 자료에서 질문과 직접 관련된 "
+                    "근거를 찾지 못했습니다. 자료가 존재하지 않는다고 단정할 수는 없습니다."
+                ),
                 next_action="관련 원문을 연결하거나 검색 범위를 확인하세요.",
             ),
         )
@@ -277,6 +281,10 @@ def _fallback_assessment(
                 answer_type="conflict",
                 status="conflict",
                 headline=_report_headline(plan, "conflict"),
+                body=(
+                    "서로 다른 출처에 같은 항목의 값이 다르게 기록되어 있습니다. "
+                    "아래 기록을 함께 확인해 주세요."
+                ),
                 facts=report_facts,
                 detail="같은 역할과 항목에 서로 다른 값이 기록되어 있습니다.",
                 next_action="최신 원문과 해당 항목의 결정권자를 확인하세요.",
@@ -305,6 +313,7 @@ def _fallback_assessment(
                 answer_type="direct",
                 status="supported",
                 headline=headline,
+                body=f"프로젝트 근거에서 확인된 값은 {rendered}입니다.",
                 facts=report_facts,
             ),
         )
@@ -321,6 +330,10 @@ def _fallback_assessment(
             answer_type="direct",
             status="supported",
             headline="가장 관련성이 높은 프로젝트 근거를 찾았습니다.",
+            body=(
+                "OpenAI API 키가 없어 추출형 답변으로 표시합니다.\n\n"
+                f"{top.context_text[:900]}"
+            ),
             facts=[
                 AnswerFact(
                     role=f"{top.document.source_type} 근거",
@@ -432,18 +445,35 @@ def _llm_assessment(
                 "상태 질문에는 함께 제공된 current_state 판정을 우선 적용하고, 완료 주장과 완료 승인을 "
                 "구분한다. 완료 뒤에 더 최신 수정 요청이 있으면 업무는 다시 열린 상태다. 문서의 수정 "
                 "시각과 본문 사건 시각을 혼동하지 않는다. 근거가 직접 지지하면 supported, 부족하면 "
-                "insufficient다. 결론은 headline 한 문장에 먼저 쓴다. facts에는 사용자가 비교해야 할 "
-                "사실을 최대 4개만 넣고 역할을 구체적으로 구분한다. 담당자는 외부 연락 담당자, 우리 팀 "
+                "insufficient다. answer는 사용자의 원래 요청을 직접 수행하는 최종 답변이다. 질문이 설명을 "
+                "요구하면 자연스러운 설명문으로, 전체 목록을 요구하면 근거 안에서 해당 항목을 빠짐없이 "
+                "목록으로, 이메일이나 문서 초안을 요구하면 실제로 사용할 수 있는 초안 형태로 작성한다. "
+                "모든 답변을 검증 보고서 형식으로 바꾸지 않는다. headline은 상태 알림이 필요할 때 사용할 "
+                "짧은 요약이다. facts는 충돌 비교나 상태 판정처럼 구조화가 실제로 도움이 될 때만 최대 "
+                "4개를 넣고, 일반 답변·설명·목록·초안에서는 비워도 된다. 담당자는 외부 연락 담당자, 우리 팀 "
                 "담당자, 승인자를 구분하고, 금액은 상대방 제안, 우리 측 견적, 내부 메모, 최종 승인 "
                 "금액을 구분한다. 역할이 다른 값은 충돌이 아니다. 제안·견적만 있고 수락 근거가 없으면 "
-                "확정 금액으로 쓰지 않는다. answer와 detail은 최대 두 문장으로 요약한다. 답변의 핵심 "
-                "주장 뒤에는 입력 배열 순서에 따른 [1] 형식의 인용을 붙인다. 충돌·부족 시 추가 검색어를 "
-                "제안한다."
+                "확정 금액으로 쓰지 않는다. conflict이면 충돌 사실을 먼저 알린 뒤에도 사용자가 요청한 "
+                "작업은 가능한 범위에서 계속 수행하고, 확인되지 않은 값은 자리표시자로 둔다. insufficient이면 "
+                "현재 검색에서 찾지 못한 것과 실제로 존재하지 않는 것을 구분한다. 답변의 핵심 주장 뒤에는 "
+                "입력 배열 순서에 따른 [1] 형식의 인용을 붙인다. 충돌·부족 시에만 필요한 추가 확인을 "
+                "next_action과 retry_queries에 제안한다."
             ),
             input=json.dumps(
                 {
                     "question": plan.resolved_question,
                     "requested_field": plan.requested_field,
+                    "requested_fields": plan.requested_fields,
+                    "cardinality": plan.cardinality,
+                    "time_range": (
+                        {
+                            "start": plan.time_start.isoformat(),
+                            "end": plan.time_end.isoformat(),
+                            "field": plan.time_field,
+                        }
+                        if plan.time_start is not None and plan.time_end is not None
+                        else None
+                    ),
                     "current_state": (
                         current_state_to_dict(current_state)
                         if current_state is not None
@@ -509,6 +539,7 @@ def _llm_assessment(
                 ),
                 status=payload["status"],
                 headline=payload["headline"].strip(),
+                body=payload["answer"].strip(),
                 facts=facts,
                 detail=payload["detail"].strip() if payload["detail"] else None,
                 next_action=(

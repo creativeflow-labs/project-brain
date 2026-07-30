@@ -1,9 +1,14 @@
+from datetime import datetime
+
 from sqlalchemy import select
 
 from app.db import SessionLocal, init_db
 from app.models import Chunk, Document, Project
 from app.services.ingestion import IngestionInput, ingest_document
-from app.services.search_core.retrieval import build_evidence_packets
+from app.services.search_core.retrieval import (
+    build_evidence_packets,
+    retrieve_candidates,
+)
 from app.services.search_core.types import QueryPlan, SearchCandidate
 
 
@@ -123,3 +128,51 @@ def test_search_packets_never_cross_project_boundary():
             [SearchCandidate(chunk=anchor, document=second_document, score=0.8)],
         )
         assert {packet.document.project_id for packet in packets} == {second.id}
+
+
+def test_time_bounded_collection_excludes_documents_from_other_months():
+    init_db()
+    with SessionLocal() as db:
+        project = Project(name="기간 목록 검색")
+        db.add(project)
+        db.commit()
+        db.refresh(project)
+        june, _ = ingest_document(
+            db,
+            IngestionInput(
+                project_id=project.id,
+                source_type="notion",
+                external_id="video-june",
+                title="크랩 6월 영상",
+                text="영상 제목: 6월 피비 소개\n업로드 시간: 2026-06-18 09:30",
+                metadata={"published_at": "2026-06-18T09:30:00+09:00"},
+            ),
+        )
+        december, _ = ingest_document(
+            db,
+            IngestionInput(
+                project_id=project.id,
+                source_type="notion",
+                external_id="video-december",
+                title="크랩 12월 영상",
+                text="영상 제목: 12월 피비 소개\n업로드 시간: 2026-12-17 20:00",
+                metadata={"published_at": "2026-12-17T20:00:00+09:00"},
+            ),
+        )
+        plan = QueryPlan(
+            original_question="2026년 6월 영상 제목과 업로드 시간은?",
+            resolved_question="2026년 6월 영상 제목과 업로드 시간은?",
+            search_queries=["크랩 유튜브 영상 제목 업로드 시간"],
+            entity_terms=["크랩", "유튜브", "영상"],
+            requested_field="date",
+            requested_fields=["title", "published_at"],
+            cardinality="all",
+            time_start=datetime.fromisoformat("2026-06-01T00:00:00+09:00"),
+            time_end=datetime.fromisoformat("2026-06-30T23:59:59+09:00"),
+            time_field="published_at",
+        )
+
+        candidates = retrieve_candidates(db, project.id, plan)
+
+        assert {candidate.document.id for candidate in candidates} == {june.id}
+        assert december.id not in {candidate.document.id for candidate in candidates}

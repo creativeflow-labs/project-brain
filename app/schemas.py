@@ -110,6 +110,7 @@ class AnswerViewOut(BaseModel):
     type: Literal["direct", "conflict", "insufficient", "state"]
     status: Literal["supported", "conflict", "insufficient"]
     headline: str
+    body: str | None = None
     facts: list[AnswerFactOut] = Field(default_factory=list)
     detail: str | None = None
     next_action: str | None = None

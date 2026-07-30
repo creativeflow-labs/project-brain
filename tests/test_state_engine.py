@@ -21,6 +21,7 @@ def _status_plan() -> QueryPlan:
         search_queries=["제니스 시안 현재 상태"],
         entity_terms=["제니스", "시안"],
         requested_field="status",
+        is_state_query=True,
     )
 
 

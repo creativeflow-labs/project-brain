@@ -4,6 +4,8 @@ import json
 import math
 import re
 from collections import Counter, defaultdict
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -56,6 +58,27 @@ STOP_WORDS = {
     "and",
     "for",
     "from",
+}
+
+DATE_KEYS = {
+    "published_at": (
+        "published_at",
+        "published_time",
+        "upload_time",
+        "uploaded_at",
+        "date",
+    ),
+    "received_at": ("received_at", "date"),
+    "sent_at": ("sent_at", "date"),
+    "updated_at": ("updated_at", "last_edited_time", "modified_time"),
+    "occurred_at": (
+        "occurred_at",
+        "event_time",
+        "date",
+        "published_at",
+        "sent_at",
+        "received_at",
+    ),
 }
 
 
@@ -119,6 +142,75 @@ def _row_text(chunk: Chunk, document: Document) -> str:
     return f"{document.title}\n{metadata}\n{chunk.text}"
 
 
+def _normalise_datetime(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value
+
+
+def _parse_datetime(value: object) -> datetime | None:
+    if isinstance(value, datetime):
+        return _normalise_datetime(value)
+    if not isinstance(value, str) or not value.strip():
+        return None
+    raw = value.strip()
+    try:
+        return _normalise_datetime(parsedate_to_datetime(raw))
+    except (TypeError, ValueError, OverflowError):
+        pass
+    try:
+        return _normalise_datetime(datetime.fromisoformat(raw.replace("Z", "+00:00")))
+    except ValueError:
+        return None
+
+
+def _text_datetimes(text: str, fallback_year: int) -> list[datetime]:
+    values: list[datetime] = []
+    patterns = (
+        r"(?P<year>20\d{2})[-./]\s*(?P<month>1[0-2]|0?[1-9])[-./]\s*(?P<day>3[01]|[12]\d|0?[1-9])",
+        r"(?P<year>20\d{2})\s*년\s*(?P<month>1[0-2]|0?[1-9])\s*월(?:\s*(?P<day>3[01]|[12]\d|0?[1-9])\s*일)?",
+        r"(?<!\d)(?P<month>1[0-2]|0?[1-9])\s*월(?:\s*(?P<day>3[01]|[12]\d|0?[1-9])\s*일)?",
+    )
+    for pattern in patterns:
+        for match in re.finditer(pattern, text):
+            groups = match.groupdict()
+            try:
+                values.append(
+                    datetime(
+                        int(groups.get("year") or fallback_year),
+                        int(groups["month"]),
+                        int(groups.get("day") or 1),
+                        tzinfo=timezone.utc,
+                    )
+                )
+            except ValueError:
+                continue
+    return values
+
+
+def _row_matches_time_range(chunk: Chunk, document: Document, plan: QueryPlan) -> bool:
+    if plan.time_start is None or plan.time_end is None:
+        return True
+    metadata = document.metadata_json or {}
+    keys = DATE_KEYS.get(plan.time_field or "occurred_at", DATE_KEYS["occurred_at"])
+    values = [
+        parsed
+        for key in keys
+        if metadata.get(key) is not None
+        for parsed in [_parse_datetime(metadata[key])]
+        if parsed is not None
+    ]
+    values.extend(
+        _text_datetimes(
+            f"{document.title}\n{chunk.text}",
+            plan.time_start.year,
+        )
+    )
+    start = _normalise_datetime(plan.time_start)
+    end = _normalise_datetime(plan.time_end)
+    return any(start <= _normalise_datetime(value) <= end for value in values)
+
+
 def retrieve_candidates(
     db: Session, project_id: str, plan: QueryPlan
 ) -> list[SearchCandidate]:
@@ -127,6 +219,12 @@ def retrieve_candidates(
         .join(Document, Chunk.document_id == Document.id)
         .where(Chunk.project_id == project_id)
     ).all()
+    if plan.time_start is not None and plan.time_end is not None:
+        rows = [
+            (chunk, document)
+            for chunk, document in rows
+            if _row_matches_time_range(chunk, document, plan)
+        ]
     if not rows:
         return []
 
@@ -192,7 +290,33 @@ def retrieve_candidates(
 
     combined.sort(key=lambda item: item[1], reverse=True)
     candidates: list[SearchCandidate] = []
-    for index, score in combined[: settings.search_rerank_limit]:
+    selected_combined = combined[: settings.search_rerank_limit]
+    if plan.cardinality == "all":
+        document_limit = settings.search_collection_evidence_limit
+        selected_combined = []
+        selected_document_ids: set[str] = set()
+        for index, score in combined:
+            document_id = rows[index][1].id
+            if document_id in selected_document_ids:
+                continue
+            selected_combined.append((index, score))
+            selected_document_ids.add(document_id)
+            if len(selected_document_ids) >= document_limit:
+                break
+        selected_indices = {index for index, _ in selected_combined}
+        per_document = Counter(rows[index][1].id for index in selected_indices)
+        for index, score in combined:
+            document_id = rows[index][1].id
+            if index in selected_indices or document_id not in selected_document_ids:
+                continue
+            if per_document[document_id] >= 5:
+                continue
+            selected_combined.append((index, score))
+            selected_indices.add(index)
+            per_document[document_id] += 1
+            if len(selected_combined) >= settings.search_candidate_limit:
+                break
+    for index, score in selected_combined:
         chunk, document = rows[index]
         candidates.append(
             SearchCandidate(
@@ -341,7 +465,11 @@ def build_evidence_packets(
         )
 
     packets.sort(key=lambda packet: packet.score, reverse=True)
-    limit = settings.search_evidence_limit
+    limit = (
+        settings.search_collection_evidence_limit
+        if plan.cardinality == "all"
+        else settings.search_evidence_limit
+    )
     selected = packets[:limit]
     if packets:
         best_score = packets[0].score

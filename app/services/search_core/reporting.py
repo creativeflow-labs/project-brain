@@ -108,6 +108,13 @@ def _plain_text(value: str | None, limit: int) -> str | None:
     return cleaned[:limit].rstrip()
 
 
+def _body_text(value: str | None, limit: int = 6000) -> str | None:
+    if not value:
+        return None
+    cleaned = value.strip()
+    return cleaned[:limit].rstrip() or None
+
+
 def _fallback_headline(plan: QueryPlan, status: str) -> str:
     question = plan.resolved_question.lower()
     field = (
@@ -172,6 +179,7 @@ def _state_report(current_state: CurrentStateAssessment) -> AnswerReport:
         answer_type="state",
         status=current_state.evidence_status,
         headline=headline,
+        body=current_state.reason,
         facts=facts,
         detail=current_state.reason,
         next_action=current_state.next_action,
@@ -184,7 +192,7 @@ def validate_answer_report(
     packets: list[EvidencePacket],
     current_state: CurrentStateAssessment | None,
 ) -> AnswerReport:
-    if current_state is not None:
+    if current_state is not None and plan.is_state_query:
         candidate = _state_report(current_state)
     elif assessment.report is not None:
         candidate = assessment.report
@@ -199,6 +207,7 @@ def validate_answer_report(
             ),
             status=assessment.status,
             headline=_fallback_headline(plan, assessment.status),
+            body=assessment.answer,
             detail=assessment.answer,
         )
 
@@ -268,11 +277,11 @@ def validate_answer_report(
         facts.sort(key=fact_order)
 
     status = assessment.status
-    if current_state is not None:
+    if current_state is not None and plan.is_state_query:
         status = current_state.evidence_status
     answer_type = (
         "state"
-        if current_state is not None
+        if current_state is not None and plan.is_state_query
         else "conflict"
         if status == "conflict"
         else "insufficient"
@@ -308,10 +317,15 @@ def validate_answer_report(
     if status != "supported" and not next_action:
         next_action = "최신 원문과 결정권자의 확인 기록을 추가로 확인하세요."
 
+    body = _body_text(candidate.body or assessment.answer)
+    if not body:
+        body = detail or headline
+
     return AnswerReport(
         answer_type=answer_type,
         status=status,
         headline=headline,
+        body=body,
         facts=facts,
         detail=detail,
         next_action=next_action,
@@ -321,6 +335,8 @@ def validate_answer_report(
 def render_answer_text(
     report: AnswerReport, document_positions: dict[str, int] | None = None
 ) -> str:
+    if report.body:
+        return report.body
     lines = [report.headline]
     for fact in report.facts:
         references = ""
@@ -346,6 +362,7 @@ def answer_report_to_dict(report: AnswerReport) -> dict:
         "type": report.answer_type,
         "status": report.status,
         "headline": report.headline,
+        "body": report.body,
         "facts": [
             {
                 "role": fact.role,

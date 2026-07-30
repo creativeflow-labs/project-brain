@@ -17,6 +17,7 @@ class Settings(BaseSettings):
     search_candidate_limit: int = 80
     search_rerank_limit: int = 36
     search_evidence_limit: int = 12
+    search_collection_evidence_limit: int = 24
     search_parent_max_chars: int = 12000
     search_history_messages: int = 8
     search_max_retries: int = 1

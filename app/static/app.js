@@ -135,6 +135,11 @@ function renderAnswerView(bubble, answerView, citations) {
   const citationNumbers = new Map(
     citations.map((citation, index) => [citation.document_id, index + 1])
   );
+  const structured = answerView.status !== "supported" || answerView.type === "state";
+  const body = answerView.body || (!structured ? answerView.headline : "");
+  const renderedBody = escapeHtml(body)
+    .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
+    .replace(/\n/g, "<br>");
   const facts = (answerView.facts || []).map(fact => {
     const references = [...new Set(
       (fact.citation_document_ids || [])
@@ -147,14 +152,14 @@ function renderAnswerView(bubble, answerView, citations) {
     </div>`;
   }).join("");
   bubble.classList.add("answer-bubble");
-  bubble.innerHTML = `<article class="answer-card">
-    <div class="answer-verdict-row">
+  bubble.innerHTML = `<article class="answer-card ${structured ? "structured" : "adaptive"}">
+    ${structured ? `<div class="answer-verdict-row">
       <span class="answer-verdict ${escapeHtml(answerView.status)}">${escapeHtml(statusLabel)}</span>
-    </div>
-    <h3>${escapeHtml(answerView.headline)}</h3>
-    ${answerView.detail ? `<section class="answer-section answer-detail"><h4><span aria-hidden="true">📝</span> 세부 내용</h4><p>${escapeHtml(answerView.detail)}</p></section>` : ""}
-    ${facts ? `<section class="answer-section answer-grounds"><h4><span aria-hidden="true">🔎</span> 판단 근거</h4><div class="answer-facts">${facts}</div></section>` : ""}
-    ${answerView.next_action ? `<section class="answer-section answer-next"><h4><span aria-hidden="true">🧚🏻</span> 피비의 제안</h4><p>${escapeHtml(answerView.next_action)}</p></section>` : ""}
+    </div><h3>${escapeHtml(answerView.headline)}</h3>` : ""}
+    ${renderedBody ? `<section class="answer-body">${renderedBody}</section>` : ""}
+    ${structured && answerView.detail && answerView.detail !== body ? `<section class="answer-section answer-detail"><h4><span aria-hidden="true">📝</span> 세부 내용</h4><p>${escapeHtml(answerView.detail)}</p></section>` : ""}
+    ${structured && facts ? `<section class="answer-section answer-grounds"><h4><span aria-hidden="true">🔎</span> 판단 근거</h4><div class="answer-facts">${facts}</div></section>` : ""}
+    ${structured && answerView.next_action ? `<section class="answer-section answer-next"><h4><span aria-hidden="true">🧚🏻</span> 피비의 제안</h4><p>${escapeHtml(answerView.next_action)}</p></section>` : ""}
   </article>`;
 }
 
