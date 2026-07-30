@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 from app.config import get_settings
 from app.models import Chunk, Document
 from app.services.embeddings import embedding_service
+from app.services.record_metadata import infer_record_type
 from app.services.search_core.types import EvidencePacket, QueryPlan, SearchCandidate
 
 settings = get_settings()
@@ -63,6 +64,8 @@ STOP_WORDS = {
 DATE_KEYS = {
     "published_at": (
         "published_at",
+        "recorded_upload_at",
+        "recorded_at",
         "published_time",
         "upload_time",
         "uploaded_at",
@@ -185,7 +188,86 @@ def _text_datetimes(text: str, fallback_year: int) -> list[datetime]:
                 )
             except ValueError:
                 continue
+    for match in re.finditer(
+        r"(?<!\d)(?P<year>\d{2})[.-]\s*"
+        r"(?P<month>1[0-2]|0?[1-9])[.-]\s*"
+        r"(?P<day>3[01]|[12]\d|0?[1-9])(?!\d)",
+        text,
+    ):
+        try:
+            values.append(
+                datetime(
+                    2000 + int(match.group("year")),
+                    int(match.group("month")),
+                    int(match.group("day")),
+                    tzinfo=timezone.utc,
+                )
+            )
+        except ValueError:
+            continue
     return values
+
+
+def _scoped_document_ids(
+    rows: list[tuple[Chunk, Document]], plan: QueryPlan
+) -> set[str]:
+    if plan.retrieval_mode != "scoped" or not plan.record_type:
+        return {document.id for _, document in rows}
+    document_text: defaultdict[str, list[str]] = defaultdict(list)
+    documents: dict[str, Document] = {}
+    for chunk, document in rows:
+        documents[document.id] = document
+        document_text[document.id].append(chunk.text)
+    matching_ids = {
+        document_id
+        for document_id, document in documents.items()
+        if document.source_type == "notion"
+        and infer_record_type(
+            document.title,
+            "\n".join(document_text[document_id]),
+            document.metadata_json or {},
+        )
+        == plan.record_type
+    }
+    grouped: defaultdict[str, set[str]] = defaultdict(set)
+    unscoped_ids: set[str] = set()
+    for document_id in matching_ids:
+        metadata = documents[document_id].metadata_json or {}
+        collection_id = metadata.get("collection_id")
+        if collection_id:
+            grouped[str(collection_id)].add(document_id)
+        else:
+            unscoped_ids.add(document_id)
+    if not grouped or len(matching_ids) == 0:
+        return matching_ids
+    scoped_coverage = (len(matching_ids) - len(unscoped_ids)) / len(matching_ids)
+    if scoped_coverage < 0.8:
+        return matching_ids
+
+    def group_score(item: tuple[str, set[str]]) -> tuple[int, int]:
+        _, document_ids = item
+        searchable_parts: list[str] = []
+        for document_id in document_ids:
+            searchable_parts.extend(
+                [
+                    str(
+                        (documents[document_id].metadata_json or {}).get(
+                            "collection_title", ""
+                        )
+                    ),
+                    documents[document_id].title,
+                    *document_text[document_id][:2],
+                ]
+            )
+        searchable = "\n".join(searchable_parts)
+        lowered = searchable.lower()
+        entity_hits = sum(
+            1 for term in plan.entity_terms if term and term.lower() in lowered
+        )
+        return entity_hits, len(document_ids)
+
+    _, selected_ids = max(grouped.items(), key=group_score)
+    return selected_ids
 
 
 def _row_matches_time_range(chunk: Chunk, document: Document, plan: QueryPlan) -> bool:
@@ -219,6 +301,8 @@ def retrieve_candidates(
         .join(Document, Chunk.document_id == Document.id)
         .where(Chunk.project_id == project_id)
     ).all()
+    scoped_ids = _scoped_document_ids(rows, plan)
+    rows = [(chunk, document) for chunk, document in rows if document.id in scoped_ids]
     if plan.time_start is not None and plan.time_end is not None:
         rows = [
             (chunk, document)
@@ -292,7 +376,11 @@ def retrieve_candidates(
     candidates: list[SearchCandidate] = []
     selected_combined = combined[: settings.search_rerank_limit]
     if plan.cardinality == "all":
-        document_limit = settings.search_collection_evidence_limit
+        document_limit = (
+            settings.search_scoped_record_limit
+            if plan.retrieval_mode == "scoped"
+            else settings.search_collection_evidence_limit
+        )
         selected_combined = []
         selected_document_ids: set[str] = set()
         for index, score in combined:
@@ -466,7 +554,9 @@ def build_evidence_packets(
 
     packets.sort(key=lambda packet: packet.score, reverse=True)
     limit = (
-        settings.search_collection_evidence_limit
+        settings.search_scoped_record_limit
+        if plan.retrieval_mode == "scoped"
+        else settings.search_collection_evidence_limit
         if plan.cardinality == "all"
         else settings.search_evidence_limit
     )

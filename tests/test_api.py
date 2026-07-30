@@ -3,7 +3,7 @@ from sqlalchemy import select
 
 from app.db import SessionLocal
 from app.main import app
-from app.models import SearchTrace, WorkStateSnapshot
+from app.models import ConversationMessage, SearchTrace, WorkStateSnapshot
 from app.services.ingestion import IngestionInput, ingest_document
 from app.services.parser import ParsedSection
 
@@ -14,8 +14,8 @@ def test_home_forces_fresh_versioned_static_assets():
 
     assert response.status_code == 200
     assert response.headers["cache-control"] == "no-store"
-    assert "/static/styles.css?v=0.4.0-alpha.4-ui1" in response.text
-    assert "/static/app.js?v=0.4.0-alpha.4" in response.text
+    assert "/static/styles.css?v=0.5.0-alpha.1" in response.text
+    assert "/static/app.js?v=0.5.0-alpha.1" in response.text
 
 
 def test_user_message_bubble_is_anchored_to_the_right_edge():
@@ -26,6 +26,17 @@ def test_user_message_bubble_is_anchored_to_the_right_edge():
     assert ".message.user > div { width: 100%; }" in response.text
     assert ".user .message-label, .user .bubble" in response.text
     assert "margin-left: auto" in response.text
+
+
+def test_frontend_keeps_evidence_scoped_to_each_answer():
+    with TestClient(app) as client:
+        response = client.get("/static/app.js")
+
+    assert response.status_code == 200
+    assert "evidenceByAnswerId" in response.text
+    assert "registerAnswerEvidence" in response.text
+    assert "activateAnswerEvidence" in response.text
+    assert "답변 ${sequence}의 근거" in response.text
 
 
 def test_upload_search_and_delete_flow():
@@ -62,8 +73,14 @@ def test_upload_search_and_delete_flow():
         assert ask_response.status_code == 200
         payload = ask_response.json()
         assert payload["mode"] == "extractive"
+        assert payload["answer_id"]
         assert payload["citations"][0]["document_id"] == document_id
         assert "김민서" in payload["citations"][0]["excerpt"]
+        with SessionLocal() as db:
+            answer_message = db.get(ConversationMessage, payload["answer_id"])
+            assert answer_message is not None
+            assert answer_message.evidence_json["citations"][0]["document_id"] == document_id
+            assert answer_message.evidence_json["citations"][0]["document_version"]
 
         delete_response = client.delete(f"/api/documents/{document_id}")
         assert delete_response.status_code == 204

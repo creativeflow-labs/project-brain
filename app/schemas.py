@@ -46,6 +46,8 @@ class Citation(BaseModel):
     source_url: str | None
     excerpt: str
     score: float
+    document_version: str | None = None
+    document_updated_at: datetime | None = None
 
 
 WorkStateCode = Literal[
@@ -120,6 +122,7 @@ class AskResponse(BaseModel):
     answer: str
     mode: str
     citations: list[Citation]
+    answer_id: str
     thread_id: str
     evidence_status: Literal["supported", "conflict", "insufficient"]
     resolved_question: str

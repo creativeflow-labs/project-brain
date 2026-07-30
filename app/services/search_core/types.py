@@ -11,6 +11,7 @@ from app.models import Chunk, ConversationMessage, Document
 EvidenceStatus = Literal["supported", "conflict", "insufficient"]
 AnswerType = Literal["direct", "conflict", "insufficient", "state"]
 SearchCardinality = Literal["one", "many", "all"]
+RetrievalMode = Literal["hybrid", "scoped"]
 FactStatus = Literal[
     "confirmed",
     "conflicting",
@@ -47,6 +48,8 @@ class QueryPlan:
     time_end: datetime | None = None
     time_field: str | None = None
     is_state_query: bool = False
+    retrieval_mode: RetrievalMode = "hybrid"
+    record_type: str | None = None
 
 
 @dataclass

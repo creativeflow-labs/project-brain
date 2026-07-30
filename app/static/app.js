@@ -1,7 +1,10 @@
 const state = {
   projects: [],
   projectId: localStorage.getItem("projectBrainProjectId") || "",
-  threadIds: {}
+  threadIds: {},
+  evidenceByAnswerId: {},
+  answerSequence: 0,
+  activeAnswerId: ""
 };
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
@@ -126,7 +129,11 @@ function renderMessage(role, text) {
   return wrapper;
 }
 
-function renderAnswerView(bubble, answerView, citations) {
+function citationButton(answerId, number) {
+  return `<button type="button" class="citation-reference" data-citation-answer="${escapeAttribute(answerId)}" data-citation-number="${number}" aria-label="답변 근거 ${number} 열기">[${number}]</button>`;
+}
+
+function renderAnswerView(bubble, answerView, citations, answerId) {
   const statusLabel = {
     supported: "✅ 확인됨",
     conflict: "⚠️ 확인 필요 · 기록 불일치",
@@ -139,13 +146,14 @@ function renderAnswerView(bubble, answerView, citations) {
   const body = answerView.body || (!structured ? answerView.headline : "");
   const renderedBody = escapeHtml(body)
     .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
+    .replace(/\[(\d+)]/g, (_, number) => citationButton(answerId, Number(number)))
     .replace(/\n/g, "<br>");
   const facts = (answerView.facts || []).map(fact => {
     const references = [...new Set(
       (fact.citation_document_ids || [])
         .map(documentId => citationNumbers.get(documentId))
         .filter(Boolean)
-    )].map(number => `<span class="fact-reference">[${number}]</span>`).join("");
+    )].map(number => citationButton(answerId, number)).join("");
     return `<div class="answer-fact">
       <div class="fact-role">${escapeHtml(fact.role)}</div>
       <div class="fact-value">${escapeHtml(fact.value)}${references}</div>
@@ -161,21 +169,63 @@ function renderAnswerView(bubble, answerView, citations) {
     ${structured && facts ? `<section class="answer-section answer-grounds"><h4><span aria-hidden="true">🔎</span> 판단 근거</h4><div class="answer-facts">${facts}</div></section>` : ""}
     ${structured && answerView.next_action ? `<section class="answer-section answer-next"><h4><span aria-hidden="true">🧚🏻</span> 피비의 제안</h4><p>${escapeHtml(answerView.next_action)}</p></section>` : ""}
   </article>`;
+  bubble.querySelectorAll("[data-citation-answer]").forEach(button => {
+    button.addEventListener("click", event => {
+      event.stopPropagation();
+      activateAnswerEvidence(button.dataset.citationAnswer, Number(button.dataset.citationNumber));
+    });
+  });
 }
 
-function renderEvidence(citations) {
+function renderEvidence(citations, sequence = null, answerId = "") {
+  $("#evidence-title").textContent = sequence ? `답변 ${sequence}의 근거` : "근거";
   $("#evidence-count").textContent = citations.length;
   if (!citations.length) {
     $("#evidence-list").innerHTML = `<div class="panel-empty">사용된 근거가 없습니다.</div>`;
     return;
   }
-  $("#evidence-list").innerHTML = citations.map((item, index) => `<article class="evidence-card">
+  $("#evidence-list").innerHTML = citations.map((item, index) => `<article class="evidence-card" data-evidence-answer="${escapeAttribute(answerId)}" data-evidence-number="${index + 1}">
     <div class="evidence-meta"><span class="source-tag">${escapeHtml(sourceLabel(item.source_type))}</span><span class="score">${Math.round(item.score * 100)}%</span></div>
     <h3>[${index + 1}] ${escapeHtml(item.title)}</h3>
     <small>${escapeHtml(item.locator || "본문")}</small>
     <p>${escapeHtml(item.excerpt)}</p>
     ${item.source_url ? `<a href="${escapeAttribute(item.source_url)}" target="_blank" rel="noreferrer">원본 열기 ↗</a>` : ""}
   </article>`).join("");
+}
+
+function registerAnswerEvidence(message, answerId, citations, currentState) {
+  state.answerSequence += 1;
+  const sequence = state.answerSequence;
+  state.evidenceByAnswerId[answerId] = { citations, currentState, sequence };
+  message.dataset.answerId = answerId;
+  message.classList.add("evidence-linked");
+  message.querySelector(".message-label").textContent = `PROJECT BRAIN · 답변 ${sequence}`;
+  message.addEventListener("click", event => {
+    if (event.target.closest("a, button")) return;
+    activateAnswerEvidence(answerId);
+  });
+}
+
+function activateAnswerEvidence(answerId, citationNumber = null) {
+  const evidence = state.evidenceByAnswerId[answerId];
+  if (!evidence) return;
+  state.activeAnswerId = answerId;
+  $$(".message.assistant").forEach(message => {
+    message.classList.toggle("active-evidence", message.dataset.answerId === answerId);
+  });
+  renderCurrentState(evidence.currentState);
+  renderEvidence(evidence.citations, evidence.sequence, answerId);
+  if (citationNumber) {
+    requestAnimationFrame(() => {
+      const card = document.querySelector(
+        `[data-evidence-answer="${CSS.escape(answerId)}"][data-evidence-number="${citationNumber}"]`
+      );
+      if (!card) return;
+      card.classList.add("focused");
+      card.scrollIntoView({ block: "nearest", behavior: "smooth" });
+      window.setTimeout(() => card.classList.remove("focused"), 1400);
+    });
+  }
 }
 
 function renderCurrentState(currentState) {
@@ -231,11 +281,11 @@ async function askQuestion(event) {
       })
     });
     state.threadIds[state.projectId] = result.thread_id;
+    registerAnswerEvidence(pending, result.answer_id, result.citations, result.current_state);
     const bubble = pending.querySelector(".bubble");
-    if (result.answer_view) renderAnswerView(bubble, result.answer_view, result.citations);
+    if (result.answer_view) renderAnswerView(bubble, result.answer_view, result.citations, result.answer_id);
     else bubble.textContent = result.answer;
-    renderCurrentState(result.current_state);
-    renderEvidence(result.citations);
+    activateAnswerEvidence(result.answer_id);
   } catch (error) {
     pending.querySelector(".bubble").textContent = `오류: ${error.message}`;
     toast(error.message, true);
@@ -379,6 +429,9 @@ function bindEvents() {
   $("#project-select").addEventListener("change", async event => {
     state.projectId = event.target.value;
     delete state.threadIds[state.projectId];
+    state.evidenceByAnswerId = {};
+    state.answerSequence = 0;
+    state.activeAnswerId = "";
     localStorage.setItem("projectBrainProjectId", state.projectId);
     $("#messages").innerHTML = `<div class="empty-chat"><div class="spark">✦</div><h2>새 프로젝트의 기억을 불러왔습니다.</h2><p>등록된 자료를 바탕으로 질문해 보세요.</p></div>`;
     renderEvidence([]);

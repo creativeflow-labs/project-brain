@@ -3,6 +3,7 @@ from __future__ import annotations
 from langgraph.graph import END, START, StateGraph
 
 from app.config import get_settings
+from app.services.search_core.collection import assess_scoped_collection
 from app.services.search_core.judgment import assess_evidence
 from app.services.search_core.planner import plan_queries
 from app.services.search_core.retrieval import (
@@ -28,8 +29,12 @@ def _retrieve_node(state: SearchState) -> dict:
 
 
 def _assess_node(state: SearchState) -> dict:
+    collection_assessment = assess_scoped_collection(
+        state["plan"], state["packets"]
+    )
     return {
-        "assessment": assess_evidence(
+        "assessment": collection_assessment
+        or assess_evidence(
             state["plan"], state["packets"], state.get("current_state")
         )
     }

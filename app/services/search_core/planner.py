@@ -208,6 +208,17 @@ def _cardinality(question: str, time_start: datetime | None) -> str:
     return "one"
 
 
+def _record_type(question: str) -> str | None:
+    lowered = question.lower()
+    if any(value in lowered for value in ("유튜브", "youtube", "영상")):
+        return "video"
+    return None
+
+
+def _retrieval_mode(cardinality: str, record_type: str | None) -> str:
+    return "scoped" if cardinality == "all" and record_type else "hybrid"
+
+
 def _parse_plan_datetime(value: object) -> datetime | None:
     if not isinstance(value, str) or not value.strip():
         return None
@@ -252,6 +263,7 @@ def _fallback_plan(
 
     time_start, time_end = _time_range(resolved)
     cardinality = _cardinality(resolved, time_start)
+    record_type = _record_type(resolved)
     queries = [resolved]
     if question.strip() != resolved:
         queries.append(question.strip())
@@ -286,6 +298,8 @@ def _fallback_plan(
         time_end=time_end,
         time_field=_time_field(question),
         is_state_query=_is_state_query(question),
+        retrieval_mode=_retrieval_mode(cardinality, record_type),
+        record_type=record_type,
     )
 
 
@@ -400,6 +414,12 @@ def _llm_plan(
             marker in question.lower()
             for marker in ("왜", "이유", "원인", "까였", "거절된 이유")
         )
+        record_type = _record_type(payload["resolved_question"])
+        final_cardinality = (
+            "all"
+            if deterministic_cardinality == "all"
+            else payload["cardinality"]
+        )
         return QueryPlan(
             original_question=question.strip(),
             resolved_question=payload["resolved_question"].strip(),
@@ -424,17 +444,15 @@ def _llm_plan(
             requested_fields=[
                 item.strip() for item in payload["requested_fields"] if item.strip()
             ],
-            cardinality=(
-                "all"
-                if deterministic_cardinality == "all"
-                else payload["cardinality"]
-            ),
+            cardinality=final_cardinality,
             time_start=(
                 deterministic_start or _parse_plan_datetime(payload["time_start"])
             ),
             time_end=deterministic_end or _parse_plan_datetime(payload["time_end"]),
             time_field=_time_field(question) or payload["time_field"],
             is_state_query=bool(payload["is_state_query"] and not has_cause_marker),
+            retrieval_mode=_retrieval_mode(final_cardinality, record_type),
+            record_type=record_type,
         )
     except Exception:
         return None

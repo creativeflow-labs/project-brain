@@ -15,6 +15,11 @@ from app.config import get_settings
 from app.models import Document
 from app.services.ingestion import IngestionInput, ingest_document
 from app.services.parser import ParsedSection, SUPPORTED_EXTENSIONS, parse_file_bytes
+from app.services.record_metadata import (
+    extract_record_title,
+    infer_record_type,
+    parse_recorded_datetime,
+)
 
 settings = get_settings()
 
@@ -248,10 +253,18 @@ class NotionConnector:
                 result.incomplete = True
                 break
             try:
+                source_id = source["id"]
+                source_title = (
+                    _rich_text(source.get("title"))
+                    or source.get("name")
+                    or "Notion 데이터 소스"
+                )
                 entries = self._query_data_source(
-                    source["id"], max_pages - len(result.pages)
+                    source_id, max_pages - len(result.pages)
                 )
                 for page in entries:
+                    page["_project_brain_collection_id"] = source_id
+                    page["_project_brain_collection_title"] = source_title
                     result.pages[page["id"]] = page
             except Exception as exc:
                 result.warnings.append(
@@ -382,6 +395,43 @@ class NotionConnector:
                 )
 
         page_text = "\n".join(section.text for section in sections).strip()
+        parent = page.get("parent") or {}
+        parent_type = parent.get("type")
+        typed_parent_id = (
+            parent.get(parent_type) if isinstance(parent_type, str) else None
+        )
+        if not isinstance(typed_parent_id, str):
+            typed_parent_id = None
+        parent_id = (
+            typed_parent_id
+            or parent.get("data_source_id")
+            or parent.get("database_id")
+            or parent.get("page_id")
+        )
+        collection_id = page.get("_project_brain_collection_id") or (
+            parent.get("data_source_id") or parent.get("database_id")
+        )
+        record_type = infer_record_type(title, page_text)
+        recorded_at = parse_recorded_datetime(title)
+        metadata = {
+            "metadata_schema_version": 2,
+            "last_edited_time": page.get("last_edited_time"),
+            "child_page_ids": sorted(result.child_page_ids),
+            "parent_type": parent_type,
+            "parent_id": parent_id,
+            "data_source_id": parent.get("data_source_id"),
+            "database_id": parent.get("database_id"),
+            "collection_id": collection_id,
+            "collection_title": page.get("_project_brain_collection_title"),
+        }
+        if record_type:
+            metadata["record_type"] = record_type
+            metadata["record_title"] = extract_record_title(title, page_text)
+        if recorded_at:
+            metadata["recorded_at"] = recorded_at.isoformat()
+            if record_type == "video":
+                metadata["recorded_upload_at"] = recorded_at.isoformat()
+        metadata = {key: value for key, value in metadata.items() if value is not None}
         existing_page = db.scalar(
             select(Document).where(
                 Document.project_id == project_id,
@@ -400,10 +450,7 @@ class NotionConnector:
                     text=page_text,
                     mime_type="text/markdown",
                     source_url=page.get("url"),
-                    metadata={
-                        "last_edited_time": page.get("last_edited_time"),
-                        "child_page_ids": sorted(result.child_page_ids),
-                    },
+                    metadata=metadata,
                     sections=sections,
                 ),
             )

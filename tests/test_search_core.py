@@ -9,6 +9,7 @@ from app.services.search_core.retrieval import (
     build_evidence_packets,
     retrieve_candidates,
 )
+from app.services.search_core.collection import assess_scoped_collection
 from app.services.search_core.types import QueryPlan, SearchCandidate
 
 
@@ -176,3 +177,87 @@ def test_time_bounded_collection_excludes_documents_from_other_months():
 
         assert {candidate.document.id for candidate in candidates} == {june.id}
         assert december.id not in {candidate.document.id for candidate in candidates}
+
+
+def test_scoped_video_collection_excludes_receipts_and_returns_complete_list():
+    init_db()
+    with SessionLocal() as db:
+        project = Project(name="범위 지정 영상 검색")
+        db.add(project)
+        db.commit()
+        db.refresh(project)
+        expected_ids: set[str] = set()
+        for day, hour, title in (
+            (2, 20, "첫 번째 영상"),
+            (4, 21, "두 번째 영상"),
+            (6, 8, "세 번째 영상"),
+        ):
+            metadata = {
+                "collection_id": "youtube-production-list",
+                "collection_title": "크랩 유튜브 제작리스트",
+                "record_type": "video",
+                "record_title": title,
+                "recorded_upload_at": f"2026-06-{day:02d}T{hour:02d}:00:00+09:00",
+            }
+            if day == 2:
+                metadata.pop("record_type")
+                metadata.pop("record_title")
+            document, _ = ingest_document(
+                db,
+                IngestionInput(
+                    project_id=project.id,
+                    source_type="notion",
+                    external_id=f"video-{day}",
+                    title=f"26.06.{day:02d}(오후{hour if hour <= 12 else hour - 12:02d}시) EP{day}. 영상 기록",
+                    text=f"📌 제목\n{title}\n📌 설명\n영상 설명",
+                    metadata=metadata,
+                ),
+            )
+            expected_ids.add(document.id)
+        ingest_document(
+            db,
+            IngestionInput(
+                project_id=project.id,
+                source_type="notion",
+                external_id="youtube-ad-receipt",
+                title="YouTube Ads 6월 영수증",
+                text="결제일: 2026-06-03\n금액: 30만 원",
+                metadata={"date": "2026-06-03T10:00:00+09:00"},
+            ),
+        )
+        ingest_document(
+            db,
+            IngestionInput(
+                project_id=project.id,
+                source_type="gmail",
+                external_id="youtube-collaboration-email",
+                title="YouTube 영상 협업 이메일",
+                text="2026년 6월 영상 협업을 제안합니다.",
+                metadata={"date": "2026-06-05T10:00:00+09:00"},
+            ),
+        )
+        plan = QueryPlan(
+            original_question="6월 크랩 유튜브 영상 전체 목록은?",
+            resolved_question="2026년 6월 크랩 유튜브 영상 전체 목록은?",
+            search_queries=["크랩 유튜브 2026년 6월 영상 제목 업로드 시간"],
+            entity_terms=["크랩", "유튜브", "youtube"],
+            requested_field="date",
+            requested_fields=["title", "published_at"],
+            cardinality="all",
+            time_start=datetime.fromisoformat("2026-06-01T00:00:00+09:00"),
+            time_end=datetime.fromisoformat("2026-06-30T23:59:59+09:00"),
+            time_field="published_at",
+            retrieval_mode="scoped",
+            record_type="video",
+        )
+
+        candidates = retrieve_candidates(db, project.id, plan)
+        packets = build_evidence_packets(db, project.id, plan, candidates)
+        assessment = assess_scoped_collection(plan, packets)
+
+        assert {candidate.document.id for candidate in candidates} == expected_ids
+        assert assessment is not None
+        assert assessment.status == "supported"
+        assert "총 3건" in assessment.answer
+        assert all(title in assessment.answer for title in ("첫 번째 영상", "두 번째 영상", "세 번째 영상"))
+        assert "영수증" not in assessment.answer

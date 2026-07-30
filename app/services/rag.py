@@ -108,6 +108,8 @@ def _answer_and_citations(
             source_url=packet.document.source_url,
             excerpt=packet.context_text[:1200],
             score=round(packet.score, 4),
+            document_version=packet.document.content_hash,
+            document_updated_at=packet.document.updated_at,
         )
         for _, packet in selected_with_positions
     ]
@@ -154,9 +156,14 @@ def answer_question(
         render_answer_text(answer_report, packet_positions),
         packets,
         display_document_ids,
-        top_k,
+        (
+            settings.search_scoped_record_limit
+            if plan.retrieval_mode == "scoped"
+            else top_k
+        ),
     )
     answer_report_payload["body"] = answer
+    citation_snapshot = [citation.model_dump(mode="json") for citation in citations]
 
     if not packets:
         mode = "no_evidence"
@@ -170,7 +177,7 @@ def answer_question(
         project_id=project_id,
         status=assessment.status,
         trace_json={
-            "search_core_version": "0.4.0-alpha.4",
+            "search_core_version": "0.5.0-alpha.1",
             "search_queries": plan.search_queries,
             "entity_terms": plan.entity_terms,
             "requested_field": plan.requested_field,
@@ -186,6 +193,8 @@ def answer_question(
                 else None
             ),
             "is_state_query": plan.is_state_query,
+            "retrieval_mode": plan.retrieval_mode,
+            "record_type": plan.record_type,
             "candidate_count": result.get("candidate_count", 0),
             "evidence_document_ids": [
                 packet.document.id for packet in packets
@@ -195,6 +204,7 @@ def answer_question(
             "retry_count": result.get("retry_count", 0),
             "current_state": current_state_payload,
             "answer_view": answer_report_payload,
+            "citation_snapshot": citation_snapshot,
         },
     )
     db.add(trace)
@@ -207,21 +217,22 @@ def answer_question(
             resolved_question=plan.resolved_question,
         )
     )
-    db.add(
-        ConversationMessage(
-            thread_id=thread.id,
-            role="assistant",
-            content=answer,
-            evidence_json={
-                "status": assessment.status,
-                "trace_id": trace.id,
-                "document_ids": display_document_ids,
-                "conflicts": assessment.conflicts,
-                "current_state": current_state_payload,
-                "answer_view": answer_report_payload,
-            },
-        )
+    assistant_message = ConversationMessage(
+        thread_id=thread.id,
+        role="assistant",
+        content=answer,
+        evidence_json={
+            "status": assessment.status,
+            "trace_id": trace.id,
+            "document_ids": display_document_ids,
+            "citations": citation_snapshot,
+            "conflicts": assessment.conflicts,
+            "current_state": current_state_payload,
+            "answer_view": answer_report_payload,
+        },
     )
+    db.add(assistant_message)
+    db.flush()
     if current_state is not None:
         db.add(
             WorkStateSnapshot(
@@ -240,6 +251,7 @@ def answer_question(
         answer=answer,
         mode=mode,
         citations=citations,
+        answer_id=assistant_message.id,
         thread_id=thread.id,
         evidence_status=assessment.status,
         resolved_question=plan.resolved_question,

@@ -22,6 +22,8 @@ def test_month_collection_question_creates_time_bounded_search_plan():
     )
     assert plan.time_field == "published_at"
     assert {"title", "published_at"}.issubset(plan.requested_fields)
+    assert plan.retrieval_mode == "scoped"
+    assert plan.record_type == "video"
 
 
 def test_rejection_reason_question_does_not_activate_state_engine():
