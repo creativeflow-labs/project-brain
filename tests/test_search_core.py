@@ -179,6 +179,45 @@ def test_time_bounded_collection_excludes_documents_from_other_months():
         assert december.id not in {candidate.document.id for candidate in candidates}
 
 
+def test_compose_collection_uses_diverse_bounded_document_set():
+    init_db()
+    with SessionLocal() as db:
+        project = Project(name="협업 제안 종합")
+        db.add(project)
+        db.commit()
+        db.refresh(project)
+        for index in range(12):
+            ingest_document(
+                db,
+                IngestionInput(
+                    project_id=project.id,
+                    source_type="gmail",
+                    external_id=f"proposal-{index}",
+                    title=f"브랜드 {index} 협업 제안",
+                    text=(
+                        f"브랜드 {index}에서 콘텐츠 협업을 제안합니다. "
+                        "산출물, 일정, 보상, 콘텐츠 사용 권한을 확인해 주세요."
+                    ),
+                    metadata={"thread_id": f"proposal-thread-{index}"},
+                ),
+            )
+        plan = QueryPlan(
+            original_question="협업 제안 답장 템플릿을 작성해줘.",
+            resolved_question="협업 제안 답장 템플릿을 작성해줘.",
+            search_queries=["협업 제안 메일", "협업 제안 조건 보상 일정 산출물"],
+            entity_terms=["협업", "제안", "메일"],
+            cardinality="all",
+            task_mode="compose",
+            scope_mode="collection",
+        )
+
+        candidates = retrieve_candidates(db, project.id, plan)
+        packets = build_evidence_packets(db, project.id, plan, candidates)
+
+        assert len({candidate.document.id for candidate in candidates}) == 8
+        assert len(packets) == 8
+
+
 def test_scoped_video_collection_excludes_receipts_and_returns_complete_list():
     init_db()
     with SessionLocal() as db:

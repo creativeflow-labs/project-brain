@@ -5,7 +5,7 @@ from langgraph.graph import END, START, StateGraph
 from app.config import get_settings
 from app.services.search_core.collection import assess_scoped_collection
 from app.services.search_core.judgment import assess_evidence
-from app.services.search_core.planner import plan_queries
+from app.services.search_core.planner import extend_plan_for_retry, plan_queries
 from app.services.search_core.retrieval import (
     build_evidence_packets,
     retrieve_candidates,
@@ -46,7 +46,10 @@ def _state_node(state: SearchState) -> dict:
 
 def _route_after_assessment(state: SearchState) -> str:
     assessment = state["assessment"]
+    plan = state["plan"]
     if not assessment.retry_queries:
+        return "finish"
+    if plan.task_mode == "compose" and plan.scope_mode == "collection":
         return "finish"
     if state.get("retry_count", 0) >= settings.search_max_retries:
         return "finish"
@@ -66,9 +69,7 @@ def _route_after_assessment(state: SearchState) -> str:
 
 def _retry_node(state: SearchState) -> dict:
     plan = state["plan"]
-    plan.search_queries = list(
-        dict.fromkeys([*plan.search_queries, *state["assessment"].retry_queries])
-    )
+    plan = extend_plan_for_retry(plan, state["assessment"].retry_queries)
     return {"plan": plan, "retry_count": state.get("retry_count", 0) + 1}
 
 

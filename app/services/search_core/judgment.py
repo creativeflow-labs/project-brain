@@ -448,6 +448,10 @@ def _llm_assessment(
                 "insufficient다. answer는 사용자의 원래 요청을 직접 수행하는 최종 답변이다. 질문이 설명을 "
                 "요구하면 자연스러운 설명문으로, 전체 목록을 요구하면 근거 안에서 해당 항목을 빠짐없이 "
                 "목록으로, 이메일이나 문서 초안을 요구하면 실제로 사용할 수 있는 초안 형태로 작성한다. "
+                "task_mode가 compose이면 검증 보고서보다 사용자가 바로 쓸 결과물을 중심으로 작성한다. "
+                "scope_mode가 collection이면 특정 회사 하나를 임의로 대표 사례로 선택하지 말고 여러 근거의 "
+                "공통 패턴을 종합해 재사용 가능한 템플릿을 만든다. 이때 서로 다른 회사의 조건 차이는 충돌이 "
+                "아니며, 회사마다 달라지는 값은 자리표시자로 둔다. "
                 "모든 답변을 검증 보고서 형식으로 바꾸지 않는다. headline은 상태 알림이 필요할 때 사용할 "
                 "짧은 요약이다. facts는 충돌 비교나 상태 판정처럼 구조화가 실제로 도움이 될 때만 최대 "
                 "4개를 넣고, 일반 답변·설명·목록·초안에서는 비워도 된다. 담당자는 외부 연락 담당자, 우리 팀 "
@@ -462,6 +466,9 @@ def _llm_assessment(
             input=json.dumps(
                 {
                     "question": plan.resolved_question,
+                    "task_mode": plan.task_mode,
+                    "scope_mode": plan.scope_mode,
+                    "locked_entity_terms": plan.locked_entity_terms,
                     "requested_field": plan.requested_field,
                     "requested_fields": plan.requested_fields,
                     "cardinality": plan.cardinality,

@@ -116,6 +116,8 @@ class AnswerViewOut(BaseModel):
     facts: list[AnswerFactOut] = Field(default_factory=list)
     detail: str | None = None
     next_action: str | None = None
+    presentation: Literal["adaptive", "structured", "artifact"] = "adaptive"
+    warning: str | None = None
 
 
 class AskResponse(BaseModel):

@@ -14,8 +14,8 @@ def test_home_forces_fresh_versioned_static_assets():
 
     assert response.status_code == 200
     assert response.headers["cache-control"] == "no-store"
-    assert "/static/styles.css?v=0.5.0-alpha.1" in response.text
-    assert "/static/app.js?v=0.5.0-alpha.1" in response.text
+    assert "/static/styles.css?v=0.5.1-alpha.1" in response.text
+    assert "/static/app.js?v=0.5.1-alpha.1" in response.text
 
 
 def test_user_message_bubble_is_anchored_to_the_right_edge():
@@ -37,6 +37,8 @@ def test_frontend_keeps_evidence_scoped_to_each_answer():
     assert "registerAnswerEvidence" in response.text
     assert "activateAnswerEvidence" in response.text
     assert "답변 ${sequence}의 근거" in response.text
+    assert 'presentation === "artifact"' in response.text
+    assert "artifact-warning" in response.text
 
 
 def test_upload_search_and_delete_flow():

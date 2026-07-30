@@ -51,6 +51,48 @@ FOLLOW_UP_MARKERS = (
     "그 협업",
     "이어서",
 )
+COMPOSE_MARKERS = (
+    "작성해",
+    "작성해줘",
+    "작성해 줘",
+    "초안",
+    "템플릿",
+    "만들어줘",
+    "만들어 줘",
+    "써줘",
+    "써 줘",
+    "draft",
+    "template",
+)
+SCOPE_INHERIT_MARKERS = (
+    "그 메일",
+    "이 메일",
+    "해당 메일",
+    "위 메일",
+    "앞선 메일",
+    "그 제안",
+    "해당 제안",
+    "앞선 제안",
+    "그럼",
+    "그러면",
+)
+ENTITY_STOP_WORDS = {
+    "ai",
+    "youtube",
+    "유튜브",
+    "유료",
+    "무료",
+    "협업",
+    "제안",
+    "메일",
+    "이메일",
+    "답장",
+    "회신",
+    "파트너십",
+    "프로젝트",
+    "draft",
+    "template",
+}
 SEOUL = ZoneInfo("Asia/Seoul")
 
 
@@ -235,6 +277,120 @@ def _is_follow_up(question: str) -> bool:
         len(stripped) <= 34
         and any(term in stripped for term in ("그", "비용", "담당", "일정", "상태"))
     )
+
+
+def _task_mode(question: str) -> str:
+    lowered = question.lower()
+    return (
+        "compose"
+        if any(marker in lowered for marker in COMPOSE_MARKERS)
+        else "answer"
+    )
+
+
+def _collaboration_collection_question(question: str) -> bool:
+    compact = re.sub(r"\s+", "", question.lower())
+    return "협업제안" in compact or (
+        "협업" in compact
+        and any(marker in compact for marker in ("메일", "이메일", "제안"))
+    )
+
+
+def _explicit_entity_terms(question: str) -> list[str]:
+    candidates: list[str] = []
+    patterns = (
+        r"([A-Za-z][A-Za-z0-9._-]{2,}|[가-힣][가-힣0-9._-]{1,})\s*(?:와|과|의)?\s*(?:협업|제안)",
+        r"\b([A-Za-z][A-Za-z0-9._-]{2,})\b(?=.{0,24}(?:협업|제안|메일|이메일))",
+        r"\b([A-Za-z][A-Za-z0-9._-]{2,})\.(?:ai|com|io|co)\b",
+        r"([A-Za-z][A-Za-z0-9._-]{2,})\s*(?:메일|이메일|답장|회신)",
+    )
+    for pattern in patterns:
+        for value in re.findall(pattern, question):
+            cleaned = value.strip(" ._- ").lower()
+            if (
+                cleaned
+                and cleaned not in ENTITY_STOP_WORDS
+                and cleaned not in STOP_WORDS
+                and cleaned not in candidates
+            ):
+                candidates.append(cleaned)
+    return candidates[:5]
+
+
+def _apply_request_contract(
+    plan: QueryPlan,
+    question: str,
+    history: list[ConversationMessage],
+) -> QueryPlan:
+    task_mode = _task_mode(question)
+    explicit_entities = _explicit_entity_terms(question)
+    prior_user = next(
+        (message for message in reversed(history) if message.role == "user"), None
+    )
+    inherits_scope = bool(
+        prior_user
+        and any(marker in question.strip().lower() for marker in SCOPE_INHERIT_MARKERS)
+    )
+
+    if explicit_entities:
+        scope_mode = "entity"
+        locked_entities = explicit_entities
+    elif inherits_scope:
+        scope_mode = "inherited"
+        prior_basis = prior_user.resolved_question or prior_user.content
+        locked_entities = _explicit_entity_terms(prior_basis)
+    elif task_mode == "compose" and _collaboration_collection_question(question):
+        scope_mode = "collection"
+        locked_entities = []
+    else:
+        scope_mode = "open"
+        locked_entities = []
+
+    plan.task_mode = task_mode
+    plan.scope_mode = scope_mode
+    plan.locked_entity_terms = locked_entities
+    if task_mode == "compose":
+        plan.is_state_query = False
+
+    # 회사명이 없는 협업 템플릿 요청은 특정 브랜드를 임의 선택하지 않고,
+    # 동일한 고정 쿼리로 관련 제안들의 공통 패턴을 수집합니다.
+    if task_mode == "compose" and scope_mode == "collection":
+        plan.cardinality = "all"
+        plan.entity_terms = ["협업", "제안", "메일", "파트너십"]
+        plan.search_queries = [
+            question.strip(),
+            "협업 제안 메일",
+            "파트너십 제안 이메일",
+            "협업 제안 회신 조건 보상 일정 산출물 권한",
+        ]
+        plan.retrieval_mode = "hybrid"
+        plan.record_type = None
+    return plan
+
+
+def extend_plan_for_retry(plan: QueryPlan, retry_queries: list[str]) -> QueryPlan:
+    if plan.task_mode != "compose":
+        plan.search_queries = list(
+            dict.fromkeys([*plan.search_queries, *retry_queries])
+        )
+        return plan
+
+    # 작성형 전체 종합은 이미 여러 문서를 모으므로 모델이 제안한 특정 회사명으로
+    # 재검색하지 않습니다. 특정 대상 작성은 최초에 잠근 대상만 사용합니다.
+    if plan.scope_mode == "collection" or not plan.locked_entity_terms:
+        return plan
+    locked_query = " ".join(
+        [
+            *plan.locked_entity_terms,
+            *plan.requested_fields[:4],
+            "최신 원문 조건",
+        ]
+    ).strip()
+    if locked_query:
+        plan.search_queries = list(
+            dict.fromkeys([*plan.search_queries, locked_query])
+        )
+    return plan
 
 
 def _fallback_plan(
@@ -461,4 +617,5 @@ def _llm_plan(
 def plan_queries(
     question: str, history: list[ConversationMessage]
 ) -> QueryPlan:
-    return _llm_plan(question, history) or _fallback_plan(question, history)
+    plan = _llm_plan(question, history) or _fallback_plan(question, history)
+    return _apply_request_contract(plan, question, history)

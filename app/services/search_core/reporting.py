@@ -290,19 +290,19 @@ def validate_answer_report(
     )
 
     headline = _plain_text(candidate.headline, 100)
-    if status == "conflict" and plan.requested_field in {
-        "contact",
-        "money",
-        "date",
-    }:
+    if (
+        plan.task_mode != "compose"
+        and status == "conflict"
+        and plan.requested_field in {"contact", "money", "date"}
+    ):
         headline = _fallback_headline(plan, status)
-    elif status == "conflict" and not any(
+    elif plan.task_mode != "compose" and status == "conflict" and not any(
         marker in (headline or "")
         for marker in ("확정할 수 없", "확인할 수 없", "충돌", "서로 다")
     ):
         # 안전 판정이 결론 문장에서 다시 단정형으로 바뀌지 않게 고정합니다.
         headline = _fallback_headline(plan, status)
-    elif status == "insufficient" and not any(
+    elif plan.task_mode != "compose" and status == "insufficient" and not any(
         marker in (headline or "")
         for marker in ("확인할 수 없", "확인 필요", "근거 부족")
     ):
@@ -321,6 +321,23 @@ def validate_answer_report(
     if not body:
         body = detail or headline
 
+    presentation = (
+        "artifact"
+        if plan.task_mode == "compose"
+        else "structured"
+        if status != "supported" or answer_type == "state"
+        else "adaptive"
+    )
+    warning = None
+    if plan.task_mode == "compose" and status == "conflict":
+        warning = (
+            "일부 근거가 서로 달라 확인되지 않은 값은 초안에서 확정하지 않았습니다."
+        )
+    elif plan.task_mode == "compose" and status == "insufficient":
+        warning = (
+            "직접 확인할 근거가 부족한 항목은 초안에서 자리표시자로 남겼습니다."
+        )
+
     return AnswerReport(
         answer_type=answer_type,
         status=status,
@@ -329,6 +346,8 @@ def validate_answer_report(
         facts=facts,
         detail=detail,
         next_action=next_action,
+        presentation=presentation,
+        warning=warning,
     )
 
 
@@ -374,6 +393,8 @@ def answer_report_to_dict(report: AnswerReport) -> dict:
         ],
         "detail": report.detail,
         "next_action": report.next_action,
+        "presentation": report.presentation,
+        "warning": report.warning,
     }
 
 

@@ -142,7 +142,11 @@ function renderAnswerView(bubble, answerView, citations, answerId) {
   const citationNumbers = new Map(
     citations.map((citation, index) => [citation.document_id, index + 1])
   );
-  const structured = answerView.status !== "supported" || answerView.type === "state";
+  const presentation = answerView.presentation || (
+    answerView.status !== "supported" || answerView.type === "state" ? "structured" : "adaptive"
+  );
+  const structured = presentation === "structured";
+  const artifact = presentation === "artifact";
   const body = answerView.body || (!structured ? answerView.headline : "");
   const renderedBody = escapeHtml(body)
     .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
@@ -160,7 +164,9 @@ function renderAnswerView(bubble, answerView, citations, answerId) {
     </div>`;
   }).join("");
   bubble.classList.add("answer-bubble");
-  bubble.innerHTML = `<article class="answer-card ${structured ? "structured" : "adaptive"}">
+  bubble.innerHTML = `<article class="answer-card ${escapeHtml(presentation)}">
+    ${artifact && answerView.warning ? `<div class="artifact-warning"><span>${escapeHtml(statusLabel)}</span><p>${escapeHtml(answerView.warning)}</p></div>` : ""}
+    ${artifact && answerView.headline ? `<h3 class="artifact-title">${escapeHtml(answerView.headline)}</h3>` : ""}
     ${structured ? `<div class="answer-verdict-row">
       <span class="answer-verdict ${escapeHtml(answerView.status)}">${escapeHtml(statusLabel)}</span>
     </div><h3>${escapeHtml(answerView.headline)}</h3>` : ""}

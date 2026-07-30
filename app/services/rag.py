@@ -177,7 +177,7 @@ def answer_question(
         project_id=project_id,
         status=assessment.status,
         trace_json={
-            "search_core_version": "0.5.0-alpha.1",
+            "search_core_version": "0.5.1-alpha.1",
             "search_queries": plan.search_queries,
             "entity_terms": plan.entity_terms,
             "requested_field": plan.requested_field,
@@ -193,6 +193,9 @@ def answer_question(
                 else None
             ),
             "is_state_query": plan.is_state_query,
+            "task_mode": plan.task_mode,
+            "scope_mode": plan.scope_mode,
+            "locked_entity_terms": plan.locked_entity_terms,
             "retrieval_mode": plan.retrieval_mode,
             "record_type": plan.record_type,
             "candidate_count": result.get("candidate_count", 0),

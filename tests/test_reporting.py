@@ -245,3 +245,39 @@ def test_supported_adaptive_body_preserves_requested_document_shape():
     report = validate_answer_report(plan, assessment, [packet], None)
 
     assert report.body == body
+
+
+def test_compose_conflict_preserves_artifact_shape_with_compact_warning():
+    document = _document("draft-conflict", "gmail", "협업 제안 메일")
+    packet = _packet(document, "협업 조건은 확인이 필요합니다.")
+    plan = QueryPlan(
+        original_question="협업 제안 답장 템플릿을 작성해줘.",
+        resolved_question="협업 제안 답장 템플릿을 작성해줘.",
+        search_queries=["협업 제안 메일"],
+        task_mode="compose",
+        scope_mode="collection",
+    )
+    body = "제목: [브랜드명] 협업 제안 회신\n\n안녕하세요.\n제안 조건을 검토하겠습니다. [1]"
+    assessment = EvidenceAssessment(
+        status="conflict",
+        answer=body,
+        cited_document_ids=[document.id],
+        conflicts=["사례별 협업비가 다릅니다."],
+        report=AnswerReport(
+            answer_type="conflict",
+            status="conflict",
+            headline="협업 제안 검토 회신 템플릿",
+            body=body,
+            detail="사례별 협업비가 다릅니다.",
+        ),
+    )
+
+    report = validate_answer_report(plan, assessment, [packet], None)
+
+    assert report.status == "conflict"
+    assert report.presentation == "artifact"
+    assert report.headline == "협업 제안 검토 회신 템플릿"
+    assert report.body == body
+    assert report.warning == (
+        "일부 근거가 서로 달라 확인되지 않은 값은 초안에서 확정하지 않았습니다."
+    )

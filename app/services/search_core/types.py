@@ -10,6 +10,9 @@ from app.models import Chunk, ConversationMessage, Document
 
 EvidenceStatus = Literal["supported", "conflict", "insufficient"]
 AnswerType = Literal["direct", "conflict", "insufficient", "state"]
+TaskMode = Literal["answer", "compose"]
+ScopeMode = Literal["open", "entity", "inherited", "collection"]
+PresentationMode = Literal["adaptive", "structured", "artifact"]
 SearchCardinality = Literal["one", "many", "all"]
 RetrievalMode = Literal["hybrid", "scoped"]
 FactStatus = Literal[
@@ -50,6 +53,9 @@ class QueryPlan:
     is_state_query: bool = False
     retrieval_mode: RetrievalMode = "hybrid"
     record_type: str | None = None
+    task_mode: TaskMode = "answer"
+    scope_mode: ScopeMode = "open"
+    locked_entity_terms: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -120,6 +126,8 @@ class AnswerReport:
     facts: list[AnswerFact] = field(default_factory=list)
     detail: str | None = None
     next_action: str | None = None
+    presentation: PresentationMode = "adaptive"
+    warning: str | None = None
 
 
 @dataclass

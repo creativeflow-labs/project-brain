@@ -377,7 +377,9 @@ def retrieve_candidates(
     selected_combined = combined[: settings.search_rerank_limit]
     if plan.cardinality == "all":
         document_limit = (
-            settings.search_scoped_record_limit
+            settings.search_compose_evidence_limit
+            if plan.task_mode == "compose" and plan.scope_mode == "collection"
+            else settings.search_scoped_record_limit
             if plan.retrieval_mode == "scoped"
             else settings.search_collection_evidence_limit
         )
@@ -554,7 +556,9 @@ def build_evidence_packets(
 
     packets.sort(key=lambda packet: packet.score, reverse=True)
     limit = (
-        settings.search_scoped_record_limit
+        settings.search_compose_evidence_limit
+        if plan.task_mode == "compose" and plan.scope_mode == "collection"
+        else settings.search_scoped_record_limit
         if plan.retrieval_mode == "scoped"
         else settings.search_collection_evidence_limit
         if plan.cardinality == "all"
