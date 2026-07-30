@@ -99,6 +99,25 @@ main { min-width: 0; padding: 0 42px 42px; }
 .evidence-panel { overflow: hidden; display: flex; flex-direction: column; }
 .panel-title { border-bottom: 1px solid var(--line); padding: 18px 20px; font-weight: 800; display: flex; justify-content: space-between; }
 .count { min-width: 23px; height: 23px; border-radius: 999px; background: var(--soft-green); color: var(--green-2); display: grid; place-items: center; font-size: 11px; }
+.state-summary { margin: 12px 12px 0; padding: 14px; border: 1px solid #cdded2; border-radius: 12px; background: #f4f8f4; }
+.state-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+.state-heading strong { display: block; margin-top: 3px; font-size: 17px; letter-spacing: -.02em; }
+.state-kicker { color: var(--green-2); font-size: 8px; font-weight: 900; letter-spacing: .13em; }
+.state-verdict { border-radius: 999px; padding: 4px 7px; font-size: 9px; font-weight: 800; white-space: nowrap; }
+.state-verdict.supported { color: var(--green-2); background: #dcecdf; }
+.state-verdict.conflict { color: #8b5514; background: #fff0cf; }
+.state-verdict.insufficient { color: #6c6674; background: #ebe8ef; }
+.state-asof { color: var(--muted); font-size: 9px; margin-top: 7px; }
+.state-reason { color: #48534b; font-size: 10px; line-height: 1.55; margin: 9px 0; }
+.next-action { border-top: 1px solid #dbe7de; padding-top: 9px; color: #34453a; font-size: 10px; line-height: 1.5; }
+.next-action span { display: block; color: var(--green-2); font-size: 8px; font-weight: 900; letter-spacing: .08em; margin-bottom: 3px; }
+.timeline { list-style: none; padding: 8px 0 0; margin: 10px 0 0; border-top: 1px solid #dbe7de; }
+.timeline-item { position: relative; display: grid; grid-template-columns: 10px 1fr; gap: 7px; padding: 5px 0; }
+.timeline-dot { width: 7px; height: 7px; margin-top: 3px; border-radius: 50%; background: #bcc9c0; }
+.timeline-item.decisive .timeline-dot { background: var(--green-2); box-shadow: 0 0 0 3px rgba(30,101,74,.12); }
+.timeline-item strong { display: block; font-size: 10px; }
+.timeline-item small { display: block; color: var(--muted); font-size: 8px; margin-top: 2px; }
+.timeline-item p { color: #59645c; font-size: 9px; line-height: 1.4; margin: 3px 0 0; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .evidence-list { overflow-y: auto; padding: 12px; }
 .panel-empty { color: var(--muted); font-size: 12px; padding: 18px 10px; line-height: 1.6; }
 .evidence-card { border: 1px solid var(--line); border-radius: 12px; padding: 13px; margin-bottom: 9px; }

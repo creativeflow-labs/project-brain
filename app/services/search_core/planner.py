@@ -66,7 +66,24 @@ def _requested_field(question: str) -> str:
         return "money"
     if any(value in lowered for value in ("일정", "마감", "언제", "날짜", "schedule", "deadline")):
         return "date"
-    if any(value in lowered for value in ("승인", "확정", "상태", "결정")):
+    if any(
+        value in lowered
+        for value in (
+            "승인",
+            "확정",
+            "상태",
+            "결정",
+            "진행",
+            "완료",
+            "보류",
+            "취소",
+            "수정",
+            "현재 단계",
+            "다음 행동",
+            "어떻게 됐",
+            "어떻게 되었",
+        )
+    ):
         return "status"
     return "general"
 
@@ -111,7 +128,7 @@ def _fallback_plan(
             "contact": "담당자 연락처",
             "money": "협업비 비용 예산 제안 금액",
             "date": "일정 날짜 마감",
-            "status": "결정 확정 승인 상태",
+            "status": "현재 상태 진행 완료 수정 요청 승인 보류 취소 최신",
         }.get(_requested_field(question), "")
         queries.append(" ".join([*entity_terms[:6], field_hint]).strip())
 

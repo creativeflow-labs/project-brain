@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Literal, TypedDict
 
 from sqlalchemy.orm import Session
@@ -8,6 +9,19 @@ from sqlalchemy.orm import Session
 from app.models import Chunk, ConversationMessage, Document
 
 EvidenceStatus = Literal["supported", "conflict", "insufficient"]
+WorkState = Literal[
+    "unknown",
+    "planned",
+    "requested",
+    "in_progress",
+    "waiting_external",
+    "waiting_approval",
+    "revision_requested",
+    "completion_claimed",
+    "completed",
+    "on_hold",
+    "cancelled",
+]
 
 
 @dataclass
@@ -39,6 +53,38 @@ class EvidencePacket:
 
 
 @dataclass
+class TimelineEvent:
+    state: WorkState
+    label: str
+    occurred_at: datetime | None
+    source_type: str
+    document_id: str
+    title: str
+    excerpt: str
+    actor: str | None = None
+    actor_role: str | None = None
+    time_basis: Literal["event", "record", "unknown"] = "unknown"
+    authority: int = 1
+    decisive: bool = False
+
+
+@dataclass
+class CurrentStateAssessment:
+    state: WorkState
+    label: str
+    evidence_status: EvidenceStatus
+    as_of: datetime | None
+    reason: str
+    next_action: str | None
+    responsible: str | None = None
+    approver: str | None = None
+    decisive_document_ids: list[str] = field(default_factory=list)
+    stale_document_ids: list[str] = field(default_factory=list)
+    conflicts: list[str] = field(default_factory=list)
+    timeline: list[TimelineEvent] = field(default_factory=list)
+
+
+@dataclass
 class EvidenceAssessment:
     status: EvidenceStatus
     answer: str
@@ -55,6 +101,7 @@ class SearchState(TypedDict, total=False):
     top_k: int
     plan: QueryPlan
     packets: list[EvidencePacket]
+    current_state: CurrentStateAssessment | None
     assessment: EvidenceAssessment
     retry_count: int
     candidate_count: int

@@ -1,8 +1,9 @@
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 
 from app.db import SessionLocal
 from app.main import app
-from app.models import SearchTrace
+from app.models import SearchTrace, WorkStateSnapshot
 from app.services.ingestion import IngestionInput, ingest_document
 from app.services.parser import ParsedSection
 
@@ -215,3 +216,61 @@ def test_notion_parent_context_is_restored_from_separate_blocks():
         citation = response.json()["citations"][0]
         assert "김민서" in citation["excerpt"]
         assert "800만 원" in citation["excerpt"]
+
+
+def test_status_question_returns_current_state_and_persists_snapshot():
+    with TestClient(app) as client:
+        project = client.post(
+            "/api/projects", json={"name": "현재 상태 API 테스트"}
+        ).json()
+        with SessionLocal() as db:
+            ingest_document(
+                db,
+                IngestionInput(
+                    project_id=project["id"],
+                    source_type="notion",
+                    external_id="api-old-complete",
+                    title="제니스 시안 보드",
+                    text="제니스 시안 상태: 완료",
+                    metadata={"last_edited_time": "2026-07-20T00:00:00Z"},
+                ),
+            )
+            ingest_document(
+                db,
+                IngestionInput(
+                    project_id=project["id"],
+                    source_type="gmail",
+                    external_id="api-new-revision",
+                    title="제니스 시안 고객 회신",
+                    text="고객이 제니스 시안의 문구 수정을 요청했습니다.",
+                    metadata={"date": "2026-07-22T00:00:00Z"},
+                ),
+            )
+
+        response = client.post(
+            "/api/ask",
+            json={
+                "project_id": project["id"],
+                "question": "제니스 시안의 현재 상태는?",
+                "top_k": 6,
+            },
+        )
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["current_state"]["state"] == "revision_requested"
+        assert payload["current_state"]["label"] == "수정 요청"
+        assert "완료 확인" not in payload["answer"]
+        assert {item["source_type"] for item in payload["citations"]} >= {
+            "notion",
+            "gmail",
+        }
+        with SessionLocal() as db:
+            snapshot = db.scalar(
+                select(WorkStateSnapshot).where(
+                    WorkStateSnapshot.project_id == project["id"]
+                )
+            )
+            assert snapshot is not None
+            assert snapshot.state == "revision_requested"
+            assert snapshot.assessment_json["decisive_document_ids"]

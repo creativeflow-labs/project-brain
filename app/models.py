@@ -155,3 +155,27 @@ class SearchTrace(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     thread: Mapped[ConversationThread] = relationship(back_populates="traces")
+
+
+class WorkStateSnapshot(Base):
+    """질문 시점에 다시 계산한 업무 상태 판정 이력입니다.
+
+    원문을 대체하는 캐시가 아니라 판정 근거와 규칙 버전을 추적하는 감사 기록입니다.
+    """
+
+    __tablename__ = "work_state_snapshots"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_string)
+    project_id: Mapped[str] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"), index=True
+    )
+    thread_id: Mapped[str | None] = mapped_column(
+        ForeignKey("conversation_threads.id", ondelete="CASCADE"),
+        index=True,
+        nullable=True,
+    )
+    subject_text: Mapped[str] = mapped_column(Text)
+    state: Mapped[str] = mapped_column(String(40), index=True)
+    as_of: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    assessment_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

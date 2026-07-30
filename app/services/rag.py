@@ -10,9 +10,11 @@ from app.models import (
     ConversationMessage,
     ConversationThread,
     SearchTrace,
+    WorkStateSnapshot,
     utcnow,
 )
-from app.schemas import AskResponse, Citation
+from app.schemas import AskResponse, Citation, CurrentStateOut
+from app.services.search_core.state_engine import current_state_to_dict
 from app.services.search_core.types import EvidencePacket
 from app.services.search_core.workflow import search_graph
 
@@ -117,6 +119,10 @@ def answer_question(
     plan = result["plan"]
     packets = result.get("packets", [])
     assessment = result["assessment"]
+    current_state = result.get("current_state")
+    current_state_payload = (
+        current_state_to_dict(current_state) if current_state is not None else None
+    )
     answer, citations = _answer_and_citations(
         assessment.answer, packets, assessment.cited_document_ids, top_k
     )
@@ -133,7 +139,7 @@ def answer_question(
         project_id=project_id,
         status=assessment.status,
         trace_json={
-            "search_core_version": "0.3.0-alpha.1",
+            "search_core_version": "0.4.0-alpha.1",
             "search_queries": plan.search_queries,
             "entity_terms": plan.entity_terms,
             "requested_field": plan.requested_field,
@@ -143,6 +149,7 @@ def answer_question(
             ],
             "cited_document_ids": assessment.cited_document_ids,
             "retry_count": result.get("retry_count", 0),
+            "current_state": current_state_payload,
         },
     )
     db.add(trace)
@@ -165,9 +172,21 @@ def answer_question(
                 "trace_id": trace.id,
                 "document_ids": assessment.cited_document_ids,
                 "conflicts": assessment.conflicts,
+                "current_state": current_state_payload,
             },
         )
     )
+    if current_state is not None:
+        db.add(
+            WorkStateSnapshot(
+                project_id=project_id,
+                thread_id=thread.id,
+                subject_text=plan.resolved_question,
+                state=current_state.state,
+                as_of=current_state.as_of,
+                assessment_json=current_state_payload,
+            )
+        )
     thread.updated_at = utcnow()
     db.commit()
 
@@ -180,4 +199,9 @@ def answer_question(
         resolved_question=plan.resolved_question,
         trace_id=trace.id,
         conflicts=assessment.conflicts,
+        current_state=(
+            CurrentStateOut.model_validate(current_state_payload)
+            if current_state_payload is not None
+            else None
+        ),
     )

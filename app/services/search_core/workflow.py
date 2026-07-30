@@ -9,6 +9,7 @@ from app.services.search_core.retrieval import (
     build_evidence_packets,
     retrieve_candidates,
 )
+from app.services.search_core.state_engine import assess_current_state
 from app.services.search_core.types import SearchState
 
 settings = get_settings()
@@ -27,7 +28,15 @@ def _retrieve_node(state: SearchState) -> dict:
 
 
 def _assess_node(state: SearchState) -> dict:
-    return {"assessment": assess_evidence(state["plan"], state["packets"])}
+    return {
+        "assessment": assess_evidence(
+            state["plan"], state["packets"], state.get("current_state")
+        )
+    }
+
+
+def _state_node(state: SearchState) -> dict:
+    return {"current_state": assess_current_state(state["plan"], state["packets"])}
 
 
 def _route_after_assessment(state: SearchState) -> str:
@@ -62,11 +71,13 @@ def build_search_graph():
     graph = StateGraph(SearchState)
     graph.add_node("plan", _plan_node)
     graph.add_node("retrieve", _retrieve_node)
+    graph.add_node("state", _state_node)
     graph.add_node("assess", _assess_node)
     graph.add_node("retry", _retry_node)
     graph.add_edge(START, "plan")
     graph.add_edge("plan", "retrieve")
-    graph.add_edge("retrieve", "assess")
+    graph.add_edge("retrieve", "state")
+    graph.add_edge("state", "assess")
     graph.add_conditional_edges(
         "assess",
         _route_after_assessment,

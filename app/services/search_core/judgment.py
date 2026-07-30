@@ -7,10 +7,12 @@ from openai import OpenAI
 
 from app.config import get_settings
 from app.services.search_core.types import (
+    CurrentStateAssessment,
     EvidenceAssessment,
     EvidencePacket,
     QueryPlan,
 )
+from app.services.search_core.state_engine import current_state_to_dict
 
 settings = get_settings()
 
@@ -56,8 +58,67 @@ def _money_values(text: str) -> set[str]:
 
 
 def _fallback_assessment(
-    plan: QueryPlan, packets: list[EvidencePacket]
+    plan: QueryPlan,
+    packets: list[EvidencePacket],
+    current_state: CurrentStateAssessment | None = None,
 ) -> EvidenceAssessment:
+    if current_state is not None:
+        cited_ids = list(
+            dict.fromkeys(
+                [
+                    *current_state.decisive_document_ids,
+                    *current_state.stale_document_ids,
+                ]
+            )
+        )
+        positions = {
+            packet.document.id: index
+            for index, packet in enumerate(packets, start=1)
+        }
+        decisive_refs = "".join(
+            f"[{positions[document_id]}]"
+            for document_id in current_state.decisive_document_ids
+            if document_id in positions
+        )
+        stale_refs = "".join(
+            f"[{positions[document_id]}]"
+            for document_id in current_state.stale_document_ids
+            if document_id in positions
+        )
+        if current_state.evidence_status == "insufficient":
+            answer = (
+                f"현재 상태는 **{current_state.label}**입니다. {current_state.reason} "
+                f"{current_state.next_action or ''}"
+            ).strip()
+        elif current_state.evidence_status == "conflict":
+            answer = (
+                f"현재 상태를 하나로 확정할 수 없습니다. {current_state.reason}"
+                f"{decisive_refs} {current_state.next_action or ''}"
+            ).strip()
+        else:
+            answer = (
+                f"현재 확인된 상태는 **{current_state.label}**입니다. "
+                f"{current_state.reason}{decisive_refs}"
+            )
+            if current_state.stale_document_ids:
+                answer += (
+                    f" 서로 다른 이전 상태 기록도 남아 있으므로 현재 판정에서는 과거 근거로 분리했습니다."
+                    f"{stale_refs}"
+                )
+            if current_state.next_action:
+                answer += f" 다음 확인 사항은 '{current_state.next_action}'입니다."
+        return EvidenceAssessment(
+            status=current_state.evidence_status,
+            answer=answer,
+            cited_document_ids=cited_ids,
+            conflicts=current_state.conflicts,
+            retry_queries=(
+                [f"{' '.join(plan.entity_terms[:5])} 최신 상태 승인 수정 완료"]
+                if current_state.evidence_status != "supported"
+                else []
+            ),
+        )
+
     if not packets:
         return EvidenceAssessment(
             status="insufficient",
@@ -127,7 +188,9 @@ def _fallback_assessment(
 
 
 def _llm_assessment(
-    plan: QueryPlan, packets: list[EvidencePacket]
+    plan: QueryPlan,
+    packets: list[EvidencePacket],
+    current_state: CurrentStateAssessment | None = None,
 ) -> EvidenceAssessment | None:
     if not settings.openai_api_key or not packets:
         return None
@@ -180,13 +243,21 @@ def _llm_assessment(
                 "어느 하나를 임의로 선택하지 않는다. Gmail이 항상 우선이거나 Notion이 항상 우선인 규칙은 "
                 "없다. 외부 제안, 내부 메모, 발신 답장처럼 기록의 역할을 구분한다. '금액 미제안', "
                 "'검색에서 금액을 못 찾음', '사용자가 답장으로 제시한 금액'을 서로 다른 사실로 다룬다. "
-                "근거가 직접 지지하면 supported, 부족하면 insufficient다. 답변의 핵심 주장 뒤에는 입력 "
+                "상태 질문에는 함께 제공된 current_state 판정을 우선 적용하고, 완료 주장과 완료 승인을 "
+                "구분한다. 완료 뒤에 더 최신 수정 요청이 있으면 업무는 다시 열린 상태다. 문서의 수정 "
+                "시각과 본문 사건 시각을 혼동하지 않는다. 근거가 직접 지지하면 supported, 부족하면 "
+                "insufficient다. 답변의 핵심 주장 뒤에는 입력 "
                 "배열 순서에 따른 [1] 형식의 인용을 붙인다. 충돌·부족 시 추가 검색어를 제안한다."
             ),
             input=json.dumps(
                 {
                     "question": plan.resolved_question,
                     "requested_field": plan.requested_field,
+                    "current_state": (
+                        current_state_to_dict(current_state)
+                        if current_state is not None
+                        else None
+                    ),
                     "evidence": evidence,
                 },
                 ensure_ascii=False,
@@ -207,7 +278,7 @@ def _llm_assessment(
             for document_id in payload["cited_document_ids"]
             if document_id in valid_ids
         ]
-        return EvidenceAssessment(
+        assessment = EvidenceAssessment(
             status=payload["status"],
             answer=payload["answer"].strip(),
             cited_document_ids=cited_ids,
@@ -216,11 +287,35 @@ def _llm_assessment(
                 query.strip() for query in payload["retry_queries"] if query.strip()
             ],
         )
+        if current_state is not None:
+            assessment.status = current_state.evidence_status
+            assessment.cited_document_ids = list(
+                dict.fromkeys(
+                    [
+                        *assessment.cited_document_ids,
+                        *current_state.decisive_document_ids,
+                        *current_state.stale_document_ids,
+                    ]
+                )
+            )
+            assessment.conflicts = list(
+                dict.fromkeys([*assessment.conflicts, *current_state.conflicts])
+            )
+        return assessment
     except Exception:
         return None
 
 
 def assess_evidence(
-    plan: QueryPlan, packets: list[EvidencePacket]
+    plan: QueryPlan,
+    packets: list[EvidencePacket],
+    current_state: CurrentStateAssessment | None = None,
 ) -> EvidenceAssessment:
-    return _llm_assessment(plan, packets) or _fallback_assessment(plan, packets)
+    # 상태 질문은 규칙 엔진이 계산한 정규 상태를 그대로 답변 계약으로 사용합니다.
+    # 자유 생성 답변이 판정 결과와 반대되는 상태명을 다시 만드는 것을 막기 위한
+    # v0.4 알파의 안전 경계이며, 설명 생성은 이후 검증기를 통과한 경우에만 허용합니다.
+    if current_state is not None:
+        return _fallback_assessment(plan, packets, current_state)
+    return _llm_assessment(plan, packets, current_state) or _fallback_assessment(
+        plan, packets, current_state
+    )

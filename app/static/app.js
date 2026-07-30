@@ -141,6 +141,36 @@ function renderEvidence(citations) {
   </article>`).join("");
 }
 
+function renderCurrentState(currentState) {
+  const panel = $("#state-summary");
+  if (!currentState) {
+    panel.hidden = true;
+    panel.innerHTML = "";
+    return;
+  }
+  const statusLabel = {
+    supported: "근거 확인",
+    conflict: "충돌 확인",
+    insufficient: "확인 필요"
+  }[currentState.evidence_status] || "확인 필요";
+  const timeline = [...(currentState.timeline || [])]
+    .reverse()
+    .slice(0, 5)
+    .map(event => `<li class="timeline-item${event.decisive ? " decisive" : ""}">
+      <span class="timeline-dot"></span>
+      <div><strong>${escapeHtml(event.label)}</strong><small>${escapeHtml(sourceLabel(event.source_type))}${event.occurred_at ? ` · ${escapeHtml(formatDate(event.occurred_at))}` : " · 시점 미확인"}</small><p>${escapeHtml(event.excerpt)}</p></div>
+    </li>`).join("");
+  panel.hidden = false;
+  panel.innerHTML = `<div class="state-heading">
+      <div><span class="state-kicker">CURRENT STATE</span><strong>${escapeHtml(currentState.label)}</strong></div>
+      <span class="state-verdict ${escapeHtml(currentState.evidence_status)}">${escapeHtml(statusLabel)}</span>
+    </div>
+    ${currentState.as_of ? `<div class="state-asof">기준 ${escapeHtml(formatDate(currentState.as_of))}</div>` : ""}
+    <p class="state-reason">${escapeHtml(currentState.reason)}</p>
+    ${currentState.next_action ? `<div class="next-action"><span>다음 확인</span>${escapeHtml(currentState.next_action)}</div>` : ""}
+    ${timeline ? `<ol class="timeline">${timeline}</ol>` : ""}`;
+}
+
 async function askQuestion(event) {
   event.preventDefault();
   if (!currentProjectRequired()) return;
@@ -165,6 +195,7 @@ async function askQuestion(event) {
     });
     state.threadIds[state.projectId] = result.thread_id;
     pending.querySelector(".bubble").textContent = result.answer;
+    renderCurrentState(result.current_state);
     renderEvidence(result.citations);
   } catch (error) {
     pending.querySelector(".bubble").textContent = `오류: ${error.message}`;
@@ -312,6 +343,7 @@ function bindEvents() {
     localStorage.setItem("projectBrainProjectId", state.projectId);
     $("#messages").innerHTML = `<div class="empty-chat"><div class="spark">✦</div><h2>새 프로젝트의 기억을 불러왔습니다.</h2><p>등록된 자료를 바탕으로 질문해 보세요.</p></div>`;
     renderEvidence([]);
+    renderCurrentState(null);
     await Promise.all([loadDocuments(), loadNotionStatus()]);
   });
   $("#new-project-button").addEventListener("click", () => $("#project-dialog").showModal());
