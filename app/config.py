@@ -14,6 +14,16 @@ class Settings(BaseSettings):
     openai_chat_model: str = "gpt-5.6-terra"
     openai_embedding_model: str = "text-embedding-3-small"
     embedding_dimensions: int = 384
+    search_candidate_limit: int = 80
+    search_rerank_limit: int = 36
+    search_evidence_limit: int = 12
+    search_collection_evidence_limit: int = 24
+    search_compose_evidence_limit: int = 8
+    search_scoped_record_limit: int = 100
+    search_parent_max_chars: int = 12000
+    search_total_evidence_max_chars: int = 80000
+    search_history_messages: int = 8
+    search_max_retries: int = 1
 
     notion_version: str = "2026-03-11"
     notion_max_pages_per_sync: int = 2000

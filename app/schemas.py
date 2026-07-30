@@ -35,6 +35,7 @@ class AskRequest(BaseModel):
     project_id: str
     question: str = Field(min_length=2, max_length=2000)
     top_k: int = Field(default=6, ge=1, le=12)
+    thread_id: str | None = None
 
 
 class Citation(BaseModel):
@@ -45,12 +46,92 @@ class Citation(BaseModel):
     source_url: str | None
     excerpt: str
     score: float
+    document_version: str | None = None
+    document_updated_at: datetime | None = None
+
+
+WorkStateCode = Literal[
+    "unknown",
+    "planned",
+    "requested",
+    "in_progress",
+    "waiting_external",
+    "waiting_approval",
+    "revision_requested",
+    "completion_claimed",
+    "completed",
+    "on_hold",
+    "cancelled",
+]
+
+
+class TimelineEventOut(BaseModel):
+    state: WorkStateCode
+    label: str
+    occurred_at: datetime | None
+    source_type: str
+    document_id: str
+    title: str
+    excerpt: str
+    actor: str | None = None
+    actor_role: str | None = None
+    time_basis: Literal["event", "record", "unknown"]
+    decisive: bool = False
+
+
+class CurrentStateOut(BaseModel):
+    state: WorkStateCode
+    label: str
+    evidence_status: Literal["supported", "conflict", "insufficient"]
+    as_of: datetime | None
+    reason: str
+    next_action: str | None
+    responsible: str | None = None
+    approver: str | None = None
+    decisive_document_ids: list[str] = Field(default_factory=list)
+    stale_document_ids: list[str] = Field(default_factory=list)
+    conflicts: list[str] = Field(default_factory=list)
+    timeline: list[TimelineEventOut] = Field(default_factory=list)
+
+
+class AnswerFactOut(BaseModel):
+    role: str
+    value: str
+    fact_status: Literal[
+        "confirmed",
+        "conflicting",
+        "proposed",
+        "recorded",
+        "unverified",
+        "outdated",
+    ]
+    citation_document_ids: list[str] = Field(default_factory=list)
+
+
+class AnswerViewOut(BaseModel):
+    type: Literal["direct", "conflict", "insufficient", "state"]
+    status: Literal["supported", "conflict", "insufficient"]
+    headline: str
+    body: str | None = None
+    facts: list[AnswerFactOut] = Field(default_factory=list)
+    detail: str | None = None
+    next_action: str | None = None
+    presentation: Literal["adaptive", "structured", "artifact"] = "adaptive"
+    warning: str | None = None
 
 
 class AskResponse(BaseModel):
     answer: str
     mode: str
     citations: list[Citation]
+    answer_id: str
+    thread_id: str
+    evidence_status: Literal["supported", "conflict", "insufficient"]
+    resolved_question: str
+    trace_id: str
+    conflicts: list[str] = Field(default_factory=list)
+    current_state: CurrentStateOut | None = None
+    answer_view: AnswerViewOut
 
 
 class NotionImportRequest(BaseModel):

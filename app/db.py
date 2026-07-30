@@ -22,6 +22,27 @@ def init_db() -> None:
     from app import models  # noqa: F401
 
     Base.metadata.create_all(bind=engine)
+    if settings.is_postgres:
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_chunks_embedding_hnsw "
+                    "ON chunks USING hnsw (embedding vector_cosine_ops)"
+                )
+            )
+            connection.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_documents_project_source "
+                    "ON documents (project_id, source_type)"
+                )
+            )
+            connection.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_documents_gmail_thread_id "
+                    "ON documents ((metadata_json ->> 'thread_id')) "
+                    "WHERE source_type = 'gmail'"
+                )
+            )
 
 
 def get_db() -> Generator[Session, None, None]:
@@ -30,4 +51,3 @@ def get_db() -> Generator[Session, None, None]:
         yield db
     finally:
         db.close()
-

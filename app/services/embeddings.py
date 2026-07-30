@@ -3,17 +3,21 @@ from __future__ import annotations
 import hashlib
 import math
 import re
-
-from openai import OpenAI
+from collections import OrderedDict
+from threading import Lock
 
 from app.config import get_settings
+from app.services.openai_client import get_openai_client
 
 settings = get_settings()
 
 
 class EmbeddingService:
     def __init__(self) -> None:
-        self.client = OpenAI(api_key=settings.openai_api_key) if settings.openai_api_key else None
+        self.client = get_openai_client()
+        self._query_cache: OrderedDict[str, tuple[float, ...]] = OrderedDict()
+        self._query_cache_lock = Lock()
+        self._query_cache_size = 512
 
     def embed_many(self, texts: list[str]) -> list[list[float]]:
         if not texts:
@@ -30,6 +34,34 @@ class EmbeddingService:
     def embed_one(self, text: str) -> list[float]:
         return self.embed_many([text])[0]
 
+    def embed_queries(self, texts: list[str]) -> list[list[float]]:
+        if not texts:
+            return []
+
+        cached: dict[str, list[float]] = {}
+        missing: list[str] = []
+        with self._query_cache_lock:
+            for text in dict.fromkeys(texts):
+                vector = self._query_cache.get(text)
+                if vector is None:
+                    missing.append(text)
+                    continue
+                self._query_cache.move_to_end(text)
+                cached[text] = list(vector)
+
+        if missing:
+            embedded = self.embed_many(missing)
+            with self._query_cache_lock:
+                for text, vector in zip(missing, embedded, strict=True):
+                    frozen = tuple(vector)
+                    self._query_cache[text] = frozen
+                    self._query_cache.move_to_end(text)
+                    cached[text] = list(frozen)
+                while len(self._query_cache) > self._query_cache_size:
+                    self._query_cache.popitem(last=False)
+
+        return [cached[text] for text in texts]
+
     def _local_embedding(self, text: str) -> list[float]:
         vector = [0.0] * settings.embedding_dimensions
         normalized = re.sub(r"\s+", " ", text.lower()).strip()
@@ -45,4 +77,3 @@ class EmbeddingService:
 
 
 embedding_service = EmbeddingService()
-

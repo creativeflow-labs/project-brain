@@ -46,7 +46,13 @@ def test_notion_discovery_collects_pages_and_data_source_entries():
             return _response(
                 200,
                 {
-                    "results": [{"object": "data_source", "id": source_id}],
+                    "results": [
+                        {
+                            "object": "data_source",
+                            "id": source_id,
+                            "title": [{"plain_text": "유튜브 제작리스트"}],
+                        }
+                    ],
                     "has_more": False,
                     "next_cursor": None,
                     "request_status": {"type": "complete"},
@@ -74,6 +80,10 @@ def test_notion_discovery_collects_pages_and_data_source_entries():
     assert set(result.pages) == {page_id, entry_id}
     assert result.data_sources == 1
     assert result.incomplete is False
+    assert result.pages[entry_id]["_project_brain_collection_id"] == source_id
+    assert result.pages[entry_id]["_project_brain_collection_title"] == (
+        "유튜브 제작리스트"
+    )
 
 
 def test_notion_api_retries_rate_limit_without_exposing_token():
@@ -148,6 +158,12 @@ def test_notion_page_sync_indexes_properties_body_and_child_page():
         "id": page_id,
         "url": "https://notion.so/example",
         "last_edited_time": "2026-07-25T00:00:00.000Z",
+        "parent": {
+            "type": "data_source_id",
+            "data_source_id": "88888888-8888-8888-8888-888888888888",
+        },
+        "_project_brain_collection_id": "88888888-8888-8888-8888-888888888888",
+        "_project_brain_collection_title": "제품 결정 데이터",
         "properties": {
             "이름": {
                 "type": "title",
@@ -183,6 +199,10 @@ def test_notion_page_sync_indexes_properties_body_and_child_page():
     assert document.title == "제품 결정 기록"
     assert document.metadata_json["child_page_ids"] == [child_id]
     assert document.metadata_json["last_edited_time"] == "2026-07-25T01:00:00.000Z"
+    assert document.metadata_json["collection_id"] == (
+        "88888888-8888-8888-8888-888888888888"
+    )
+    assert document.metadata_json["collection_title"] == "제품 결정 데이터"
     assert "상태: 확정" in "\n".join(chunk.text for chunk in chunks)
     assert "김민서" in "\n".join(chunk.text for chunk in chunks)
 

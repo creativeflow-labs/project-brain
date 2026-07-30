@@ -232,6 +232,7 @@ def sync_notion_project(db: Session, project_id: str, force: bool = False) -> di
                 and existing
                 and discovered_edited
                 and existing_metadata.get("last_edited_time") == discovered_edited
+                and existing_metadata.get("metadata_schema_version", 0) >= 2
             ):
                 unchanged += 1
                 for child_id in existing_metadata.get("child_page_ids", []):
@@ -242,6 +243,13 @@ def sync_notion_project(db: Session, project_id: str, force: bool = False) -> di
 
             try:
                 page = connector.fetch_page(page_id)
+                if discovered_page:
+                    for key in (
+                        "_project_brain_collection_id",
+                        "_project_brain_collection_title",
+                    ):
+                        if discovered_page.get(key):
+                            page[key] = discovered_page[key]
                 if page.get("archived") or page.get("in_trash"):
                     removed += _remove_notion_page(db, project_id, page_id)
                     continue

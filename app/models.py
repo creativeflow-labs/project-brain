@@ -31,6 +31,9 @@ class Project(Base):
     documents: Mapped[list["Document"]] = relationship(
         back_populates="project", cascade="all, delete-orphan"
     )
+    conversation_threads: Mapped[list["ConversationThread"]] = relationship(
+        back_populates="project", cascade="all, delete-orphan"
+    )
 
 
 class Document(Base):
@@ -99,3 +102,80 @@ class ConnectorCredential(Base):
         DateTime(timezone=True), default=utcnow, onupdate=utcnow
     )
 
+
+class ConversationThread(Base):
+    __tablename__ = "conversation_threads"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_string)
+    project_id: Mapped[str] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"), index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
+    project: Mapped[Project] = relationship(back_populates="conversation_threads")
+    messages: Mapped[list["ConversationMessage"]] = relationship(
+        back_populates="thread", cascade="all, delete-orphan"
+    )
+    traces: Mapped[list["SearchTrace"]] = relationship(
+        back_populates="thread", cascade="all, delete-orphan"
+    )
+
+
+class ConversationMessage(Base):
+    __tablename__ = "conversation_messages"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_string)
+    thread_id: Mapped[str] = mapped_column(
+        ForeignKey("conversation_threads.id", ondelete="CASCADE"), index=True
+    )
+    role: Mapped[str] = mapped_column(String(20))
+    content: Mapped[str] = mapped_column(Text)
+    resolved_question: Mapped[str | None] = mapped_column(Text, nullable=True)
+    evidence_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    thread: Mapped[ConversationThread] = relationship(back_populates="messages")
+
+
+class SearchTrace(Base):
+    __tablename__ = "search_traces"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_string)
+    thread_id: Mapped[str] = mapped_column(
+        ForeignKey("conversation_threads.id", ondelete="CASCADE"), index=True
+    )
+    project_id: Mapped[str] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"), index=True
+    )
+    status: Mapped[str] = mapped_column(String(30))
+    trace_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    thread: Mapped[ConversationThread] = relationship(back_populates="traces")
+
+
+class WorkStateSnapshot(Base):
+    """질문 시점에 다시 계산한 업무 상태 판정 이력입니다.
+
+    원문을 대체하는 캐시가 아니라 판정 근거와 규칙 버전을 추적하는 감사 기록입니다.
+    """
+
+    __tablename__ = "work_state_snapshots"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_string)
+    project_id: Mapped[str] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"), index=True
+    )
+    thread_id: Mapped[str | None] = mapped_column(
+        ForeignKey("conversation_threads.id", ondelete="CASCADE"),
+        index=True,
+        nullable=True,
+    )
+    subject_text: Mapped[str] = mapped_column(Text)
+    state: Mapped[str] = mapped_column(String(40), index=True)
+    as_of: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    assessment_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

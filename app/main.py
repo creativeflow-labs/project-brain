@@ -90,7 +90,10 @@ def require_project(db: Session, project_id: str) -> Project:
 
 @app.get("/", response_class=HTMLResponse)
 def home() -> HTMLResponse:
-    return HTMLResponse((Path(__file__).parent / "static" / "index.html").read_text("utf-8"))
+    return HTMLResponse(
+        (Path(__file__).parent / "static" / "index.html").read_text("utf-8"),
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 @app.get("/api/health")
@@ -190,7 +193,15 @@ async def upload_document(
 def ask(payload: AskRequest, db: Session = Depends(get_db)):
     require_project(db, payload.project_id)
     try:
-        return answer_question(db, payload.project_id, payload.question, payload.top_k)
+        return answer_question(
+            db,
+            payload.project_id,
+            payload.question,
+            payload.top_k,
+            payload.thread_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"답변 생성에 실패했습니다: {exc}") from exc
 
