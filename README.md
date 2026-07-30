@@ -20,7 +20,7 @@ Project Brain은 흩어진 프로젝트 기록을 연결해 무엇이 왜 결정
 
 한 프로젝트의 데이터가 다른 프로젝트 검색에 섞이지 않도록 `project_id`를 수집·청크·검색 단계에서 강제합니다.
 
-주요 제품·기술 결정은 [docs/DECISIONS.md](docs/DECISIONS.md), 개발 순서와 완료 기준은 [docs/ROADMAP.md](docs/ROADMAP.md), 출시별 변경 사항은 [CHANGELOG.md](CHANGELOG.md)에 기록합니다.
+주요 제품·기술 결정은 [docs/DECISIONS.md](docs/DECISIONS.md), 개발 순서와 완료 기준은 [docs/ROADMAP.md](docs/ROADMAP.md), 시장·상품화 기준은 [docs/COMMERCIALIZATION.md](docs/COMMERCIALIZATION.md), 출시별 변경 사항은 [CHANGELOG.md](CHANGELOG.md)에 기록합니다.
 
 ## Features
 
