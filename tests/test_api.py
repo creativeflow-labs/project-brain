@@ -14,8 +14,8 @@ def test_home_forces_fresh_versioned_static_assets():
 
     assert response.status_code == 200
     assert response.headers["cache-control"] == "no-store"
-    assert "/static/styles.css?v=0.5.2-alpha.1" in response.text
-    assert "/static/app.js?v=0.5.2-alpha.1" in response.text
+    assert "/static/styles.css?v=0.5.2-alpha.2" in response.text
+    assert "/static/app.js?v=0.5.2-alpha.2" in response.text
 
 
 def test_user_message_bubble_is_anchored_to_the_right_edge():

@@ -46,10 +46,21 @@ FOLLOW_UP_MARKERS = (
     "그건",
     "그게",
     "그 담당",
+    "그 메일",
+    "이 메일",
+    "위 메일",
+    "앞선 메일",
+    "그 제안",
+    "이 제안",
+    "앞선 제안",
     "해당",
     "그 프로젝트",
     "그 협업",
     "이어서",
+)
+ELLIPTICAL_FOLLOW_UP_PATTERN = re.compile(
+    r"^(?:비용|협업비|금액|담당자|연락처|일정|상태)"
+    r"(?:은|는|이|가)?(?:\s*(?:뭐야|누구야|얼마야|어때|어떻게 됐어))?[?.!]*$"
 )
 COMPOSE_MARKERS = (
     "작성해",
@@ -63,18 +74,6 @@ COMPOSE_MARKERS = (
     "써 줘",
     "draft",
     "template",
-)
-SCOPE_INHERIT_MARKERS = (
-    "그 메일",
-    "이 메일",
-    "해당 메일",
-    "위 메일",
-    "앞선 메일",
-    "그 제안",
-    "해당 제안",
-    "앞선 제안",
-    "그럼",
-    "그러면",
 )
 ENTITY_STOP_WORDS = {
     "ai",
@@ -273,10 +272,14 @@ def _parse_plan_datetime(value: object) -> datetime | None:
 
 def _is_follow_up(question: str) -> bool:
     stripped = question.strip()
-    return stripped.startswith(FOLLOW_UP_MARKERS) or (
-        len(stripped) <= 34
-        and any(term in stripped for term in ("그", "비용", "담당", "일정", "상태"))
+    return stripped.startswith(FOLLOW_UP_MARKERS) or bool(
+        ELLIPTICAL_FOLLOW_UP_PATTERN.fullmatch(stripped)
     )
+
+
+def _conversation_basis(message: ConversationMessage) -> str:
+    basis = message.resolved_question or message.content
+    return basis.split(" / 후속 질문: ", 1)[0].strip()
 
 
 def _task_mode(question: str) -> str:
@@ -329,7 +332,8 @@ def _apply_request_contract(
     )
     inherits_scope = bool(
         prior_user
-        and any(marker in question.strip().lower() for marker in SCOPE_INHERIT_MARKERS)
+        and not explicit_entities
+        and _is_follow_up(question)
     )
 
     if explicit_entities:
@@ -337,7 +341,7 @@ def _apply_request_contract(
         locked_entities = explicit_entities
     elif inherits_scope:
         scope_mode = "inherited"
-        prior_basis = prior_user.resolved_question or prior_user.content
+        prior_basis = _conversation_basis(prior_user)
         locked_entities = _explicit_entity_terms(prior_basis)
     elif task_mode == "compose" and _collaboration_collection_question(question):
         scope_mode = "collection"
@@ -437,10 +441,11 @@ def _fallback_plan(
     )
     prior_basis = ""
     if prior_user:
-        prior_basis = prior_user.resolved_question or prior_user.content
+        prior_basis = _conversation_basis(prior_user)
 
     resolved = question.strip()
-    if prior_basis and _is_follow_up(question):
+    current_entities = _explicit_entity_terms(question)
+    if prior_basis and _is_follow_up(question) and not current_entities:
         resolved = f"{prior_basis} / 후속 질문: {question.strip()}"
 
     current_terms = _keywords(question)

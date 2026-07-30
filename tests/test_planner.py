@@ -88,6 +88,80 @@ def test_explicit_contact_and_money_questions_skip_llm_planning(monkeypatch):
     assert contact.scope_mode == money.scope_mode == "entity"
 
 
+def test_explicit_entity_resets_previous_collection_scope(monkeypatch):
+    def fail_if_called(*_args, **_kwargs):
+        raise AssertionError("explicit fact lookup must use deterministic planning")
+
+    monkeypatch.setattr(planner, "_llm_plan", fail_if_called)
+    prior = ConversationMessage(
+        thread_id="thread",
+        role="user",
+        content="크랩 유튜브 6월 영상 목록을 알려줘.",
+        resolved_question="2026년 6월 크랩 유튜브 영상 전체 목록을 알려줘.",
+    )
+
+    plan = plan_queries("magiclight 협업 담당자는?", [prior])
+
+    assert plan.resolved_question == "magiclight 협업 담당자는?"
+    assert plan.scope_mode == "entity"
+    assert plan.requested_field == "contact"
+    assert plan.time_start is None
+    assert plan.time_end is None
+    assert plan.record_type is None
+    assert plan.cardinality == "one"
+    assert plan.retrieval_mode == "hybrid"
+    assert all("6월" not in query for query in plan.search_queries)
+
+
+def test_referential_follow_up_keeps_previous_collection_scope():
+    prior = ConversationMessage(
+        thread_id="thread",
+        role="user",
+        content="크랩 유튜브 6월 영상 목록을 알려줘.",
+        resolved_question="2026년 6월 크랩 유튜브 영상 전체 목록을 알려줘.",
+    )
+
+    plan = plan_queries("그럼 영상은 몇 개야?", [prior])
+
+    assert "2026년 6월" in plan.resolved_question
+    assert plan.time_start is not None
+    assert plan.record_type == "video"
+    assert plan.cardinality == "all"
+    assert plan.retrieval_mode == "scoped"
+
+
+def test_referential_contact_question_keeps_previous_entity():
+    prior = ConversationMessage(
+        thread_id="thread",
+        role="user",
+        content="MagicLight 협업비는 얼마야?",
+        resolved_question="MagicLight 협업의 유료 협업비는 얼마인가?",
+    )
+
+    plan = plan_queries("그 담당자는?", [prior])
+
+    assert plan.scope_mode == "inherited"
+    assert "magiclight" in plan.locked_entity_terms
+    assert plan.requested_field == "contact"
+
+
+def test_follow_up_resolution_does_not_accumulate_previous_suffixes():
+    prior = ConversationMessage(
+        thread_id="thread",
+        role="user",
+        content="그 담당자는?",
+        resolved_question=(
+            "MagicLight 협업의 유료 협업비는 얼마인가? "
+            "/ 후속 질문: 그 담당자는?"
+        ),
+    )
+
+    plan = plan_queries("그럼 비용은?", [prior])
+
+    assert plan.resolved_question.count("/ 후속 질문:") == 1
+    assert plan.resolved_question.endswith("그럼 비용은?")
+
+
 def test_explicit_brand_template_locks_entity_scope():
     plan = plan_queries("MagicLight.AI 협업 제안에 보낼 답장 초안을 작성해줘.", [])
 
