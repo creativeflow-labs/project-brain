@@ -62,12 +62,23 @@ def _answer_and_citations(
         for value in re.findall(r"\[(\d+)]", answer)
         if 1 <= int(value) <= len(packets)
     }
-    cited_ids = set(cited_document_ids)
-    selected_with_positions = [
-        (position, packet)
+    packet_positions = {
+        packet.document.id: (position, packet)
         for position, packet in enumerate(packets, start=1)
-        if position in referenced_positions or packet.document.id in cited_ids
-    ][:top_k]
+    }
+    selected_with_positions: list[tuple[int, EvidencePacket]] = []
+    selected_ids: set[str] = set()
+    for document_id in cited_document_ids:
+        item = packet_positions.get(document_id)
+        if item and document_id not in selected_ids:
+            selected_with_positions.append(item)
+            selected_ids.add(document_id)
+    for position in sorted(referenced_positions):
+        packet = packets[position - 1]
+        if packet.document.id not in selected_ids:
+            selected_with_positions.append((position, packet))
+            selected_ids.add(packet.document.id)
+    selected_with_positions = selected_with_positions[:top_k]
     if not selected_with_positions and packets:
         selected_with_positions = [(1, packets[0])]
 
@@ -131,8 +142,8 @@ def answer_question(
     )
     answer_report = validate_answer_report(plan, assessment, packets, current_state)
     report_ids = report_document_ids(answer_report)
-    assessment.cited_document_ids = list(
-        dict.fromkeys([*assessment.cited_document_ids, *report_ids])
+    display_document_ids = list(
+        dict.fromkeys([*report_ids, *assessment.cited_document_ids])
     )
     packet_positions = {
         packet.document.id: position
@@ -142,7 +153,7 @@ def answer_question(
     answer, citations = _answer_and_citations(
         render_answer_text(answer_report, packet_positions),
         packets,
-        assessment.cited_document_ids,
+        display_document_ids,
         top_k,
     )
 
@@ -158,7 +169,7 @@ def answer_question(
         project_id=project_id,
         status=assessment.status,
         trace_json={
-            "search_core_version": "0.4.0-alpha.2",
+            "search_core_version": "0.4.0-alpha.3",
             "search_queries": plan.search_queries,
             "entity_terms": plan.entity_terms,
             "requested_field": plan.requested_field,
@@ -166,7 +177,8 @@ def answer_question(
             "evidence_document_ids": [
                 packet.document.id for packet in packets
             ],
-            "cited_document_ids": assessment.cited_document_ids,
+            "cited_document_ids": display_document_ids,
+            "judgment_document_ids": assessment.cited_document_ids,
             "retry_count": result.get("retry_count", 0),
             "current_state": current_state_payload,
             "answer_view": answer_report_payload,
@@ -190,7 +202,7 @@ def answer_question(
             evidence_json={
                 "status": assessment.status,
                 "trace_id": trace.id,
-                "document_ids": assessment.cited_document_ids,
+                "document_ids": display_document_ids,
                 "conflicts": assessment.conflicts,
                 "current_state": current_state_payload,
                 "answer_view": answer_report_payload,

@@ -11,6 +11,91 @@ from app.services.search_core.types import (
     QueryPlan,
 )
 
+
+def _fact_source_types(
+    document_ids: list[str], packets_by_id: dict[str, EvidencePacket]
+) -> list[str]:
+    return list(
+        dict.fromkeys(
+            packets_by_id[document_id].document.source_type
+            for document_id in document_ids
+            if document_id in packets_by_id
+        )
+    )
+
+
+def _fact_role(
+    plan: QueryPlan,
+    role: str,
+    source_types: list[str],
+) -> str:
+    if len(source_types) != 1:
+        return role
+    source = source_types[0]
+    lowered = role.lower()
+    source_label = {
+        "notion": "Notion",
+        "gmail": "Gmail",
+        "upload": "직접 업로드",
+    }.get(source, source)
+    if plan.requested_field == "contact":
+        if source == "notion":
+            return "Notion · 담당자 기록"
+        if source == "gmail" and "수신" in lowered:
+            return "Gmail · 회신 수신자"
+        if source == "gmail":
+            return "Gmail · 원문 발신자"
+        return f"{source_label} · 담당자 기록"
+    if plan.requested_field == "money":
+        if source == "notion":
+            return "Notion · 금액 기록"
+        if source == "gmail" and any(
+            marker in lowered for marker in ("우리", "견적", "회신")
+        ):
+            return "Gmail · 우리 측 견적"
+        if source == "gmail":
+            return "Gmail · 원문 금액 기록"
+        return f"{source_label} · 금액 기록"
+    return role
+
+
+def _contact_conflict_detail(facts: list[AnswerFact]) -> str | None:
+    notion_fact = next(
+        (fact for fact in facts if fact.role == "Notion · 담당자 기록"), None
+    )
+    gmail_fact = next(
+        (fact for fact in facts if fact.role == "Gmail · 원문 발신자"), None
+    )
+    if notion_fact is None or gmail_fact is None:
+        return None
+    notion_emails = set(
+        re.findall(
+            r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}",
+            notion_fact.value,
+            flags=re.IGNORECASE,
+        )
+    )
+    gmail_emails = set(
+        re.findall(
+            r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}",
+            gmail_fact.value,
+            flags=re.IGNORECASE,
+        )
+    )
+    if not notion_emails.intersection(gmail_emails):
+        return None
+    notion_match = re.match(r"([가-힣]{2,4}|[A-Za-z][A-Za-z'.-]*)", notion_fact.value)
+    gmail_match = re.match(r"([가-힣]{2,4}|[A-Za-z][A-Za-z'.-]*)", gmail_fact.value)
+    notion_name = notion_match.group(1) if notion_match else ""
+    gmail_name = gmail_match.group(1) if gmail_match else ""
+    if not notion_name or not gmail_name or notion_name.lower() == gmail_name.lower():
+        return None
+    return (
+        f"Notion 기록의 {notion_name} 표기에도 이메일 주소는 {gmail_name}의 주소로 "
+        "동일하게 적혀 있어, 최신 담당자 확인이 필요합니다."
+    )
+
+
 def _plain_text(value: str | None, limit: int) -> str | None:
     if not value:
         return None
@@ -118,10 +203,27 @@ def validate_answer_report(
         )
 
     valid_ids = {packet.document.id for packet in packets}
+    packets_by_id = {packet.document.id: packet for packet in packets}
     facts: list[AnswerFact] = []
     seen: set[tuple[str, str, tuple[str, ...]]] = set()
-    for fact in candidate.facts:
-        role = _plain_text(fact.role, 70)
+    seen_contact_sources: set[str] = set()
+    candidate_facts = list(candidate.facts)
+    if plan.requested_field == "contact":
+        contact_source_order = {"notion": 0, "gmail": 1, "upload": 2}
+
+        def contact_fact_order(fact: AnswerFact) -> tuple[int, int]:
+            sources = _fact_source_types(fact.document_ids, packets_by_id)
+            role = fact.role.lower()
+            reply_penalty = int(any(marker in role for marker in ("수신", "회신")))
+            return (
+                contact_source_order.get(sources[0], 9) if sources else 9,
+                reply_penalty,
+            )
+
+        candidate_facts.sort(key=contact_fact_order)
+
+    for fact in candidate_facts:
+        raw_role = _plain_text(fact.role, 70)
         value = _plain_text(fact.value, 180)
         document_ids = list(
             dict.fromkeys(
@@ -130,6 +232,8 @@ def validate_answer_report(
                 if document_id in valid_ids
             )
         )
+        source_types = _fact_source_types(document_ids, packets_by_id)
+        role = _fact_role(plan, raw_role or "기록", source_types)
         if not role or not value:
             continue
         if not document_ids and fact.fact_status != "unverified":
@@ -137,6 +241,11 @@ def validate_answer_report(
         key = (role, value, tuple(document_ids))
         if key in seen:
             continue
+        if plan.requested_field == "contact":
+            source_key = source_types[0] if len(source_types) == 1 else "mixed"
+            if source_key in seen_contact_sources:
+                continue
+            seen_contact_sources.add(source_key)
         seen.add(key)
         facts.append(
             AnswerFact(
@@ -148,6 +257,15 @@ def validate_answer_report(
         )
         if len(facts) >= 4:
             break
+
+    if plan.requested_field in {"contact", "money"}:
+        source_order = {"notion": 0, "gmail": 1, "upload": 2}
+
+        def fact_order(fact: AnswerFact) -> tuple[int, str]:
+            sources = _fact_source_types(fact.document_ids, packets_by_id)
+            return (source_order.get(sources[0], 9) if sources else 9, fact.role)
+
+        facts.sort(key=fact_order)
 
     status = assessment.status
     if current_state is not None:
@@ -184,6 +302,8 @@ def validate_answer_report(
         headline = _fallback_headline(plan, status)
 
     detail = _plain_text(candidate.detail, 320)
+    if status == "conflict" and plan.requested_field == "contact":
+        detail = _contact_conflict_detail(facts) or detail
     next_action = _plain_text(candidate.next_action, 180)
     if status != "supported" and not next_action:
         next_action = "최신 원문과 결정권자의 확인 기록을 추가로 확인하세요."

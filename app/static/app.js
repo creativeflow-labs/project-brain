@@ -128,18 +128,10 @@ function renderMessage(role, text) {
 
 function renderAnswerView(bubble, answerView, citations) {
   const statusLabel = {
-    supported: "확인됨",
-    conflict: "충돌",
-    insufficient: "확인 필요"
+    supported: "✅ 확인됨",
+    conflict: "⚠️ 확인 필요 · 기록 불일치",
+    insufficient: "❓ 확인 필요 · 근거 부족"
   }[answerView.status] || "확인 필요";
-  const factStatusLabel = {
-    confirmed: "확인",
-    conflicting: "충돌",
-    proposed: "제안",
-    recorded: "기록",
-    unverified: "미확인",
-    outdated: "이전 기록"
-  };
   const citationNumbers = new Map(
     citations.map((citation, index) => [citation.document_id, index + 1])
   );
@@ -152,7 +144,6 @@ function renderAnswerView(bubble, answerView, citations) {
     return `<div class="answer-fact">
       <div class="fact-role">${escapeHtml(fact.role)}</div>
       <div class="fact-value">${escapeHtml(fact.value)}${references}</div>
-      <span class="fact-status ${escapeHtml(fact.fact_status)}">${escapeHtml(factStatusLabel[fact.fact_status] || "기록")}</span>
     </div>`;
   }).join("");
   bubble.classList.add("answer-bubble");
@@ -161,9 +152,9 @@ function renderAnswerView(bubble, answerView, citations) {
       <span class="answer-verdict ${escapeHtml(answerView.status)}">${escapeHtml(statusLabel)}</span>
     </div>
     <h3>${escapeHtml(answerView.headline)}</h3>
-    ${facts ? `<div class="answer-facts">${facts}</div>` : ""}
-    ${answerView.next_action ? `<div class="answer-next"><span>다음 확인</span><p>${escapeHtml(answerView.next_action)}</p></div>` : ""}
-    ${answerView.detail ? `<details class="answer-detail"><summary>판정 설명 보기</summary><p>${escapeHtml(answerView.detail)}</p></details>` : ""}
+    ${answerView.detail ? `<section class="answer-section answer-detail"><h4><span aria-hidden="true">📝</span> 세부 내용</h4><p>${escapeHtml(answerView.detail)}</p></section>` : ""}
+    ${facts ? `<section class="answer-section answer-grounds"><h4><span aria-hidden="true">🔎</span> 판단 근거</h4><div class="answer-facts">${facts}</div></section>` : ""}
+    ${answerView.next_action ? `<section class="answer-section answer-next"><h4><span aria-hidden="true">🧚🏻</span> 피비의 제안</h4><p>${escapeHtml(answerView.next_action)}</p></section>` : ""}
   </article>`;
 }
 

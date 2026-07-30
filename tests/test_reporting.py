@@ -108,3 +108,74 @@ def test_report_validator_removes_markdown_and_blocks_decisive_conflict_headline
     assert report.headline == "협업 담당자를 하나로 확정할 수 없습니다."
     assert "**" not in report.facts[0].role
     assert "**" not in report.facts[0].value
+
+
+def test_report_validator_deduplicates_same_gmail_contact_and_orders_sources():
+    notion_document = _document("notion-contact", "notion", "협업 기록")
+    gmail_original_document = _document(
+        "gmail-original", "gmail", "협업 제안 원문"
+    )
+    gmail_reply_document = _document("gmail-reply", "gmail", "협업 회신")
+    packets = [
+        _packet(notion_document, "담당자: Brown, magiclight.emily@magiclightai.com"),
+        _packet(
+            gmail_original_document,
+            "발신자: Emily, magiclight.emily@magiclightai.com",
+        ),
+        _packet(
+            gmail_reply_document,
+            "수신자: Emily, magiclight.emily@magiclightai.com",
+        ),
+    ]
+    assessment = EvidenceAssessment(
+        status="conflict",
+        answer="담당자 기록이 다릅니다.",
+        cited_document_ids=[
+            gmail_original_document.id,
+            notion_document.id,
+            gmail_reply_document.id,
+        ],
+        report=AnswerReport(
+            answer_type="conflict",
+            status="conflict",
+            headline="협업 담당자를 하나로 확정할 수 없습니다.",
+            facts=[
+                AnswerFact(
+                    role="외부 연락 담당자",
+                    value="Emily, Creator Partnerships | Magiclight.ai; magiclight.emily@magiclightai.com",
+                    fact_status="confirmed",
+                    document_ids=[gmail_original_document.id],
+                ),
+                AnswerFact(
+                    role="Notion 담당자",
+                    value="Brown, Creator Partnerships | Magiclight.ai; magiclight.emily@magiclightai.com",
+                    fact_status="conflicting",
+                    document_ids=[notion_document.id],
+                ),
+                AnswerFact(
+                    role="회신 수신자",
+                    value="Emily, magiclight.emily@magiclightai.com",
+                    fact_status="confirmed",
+                    document_ids=[gmail_reply_document.id],
+                ),
+            ],
+            detail="Notion의 이름과 Gmail의 이름은 다르지만 이메일 주소는 같습니다.",
+            next_action="이메일 주소로 현재 담당자를 확인하세요.",
+        ),
+    )
+
+    report = validate_answer_report(_contact_plan(), assessment, packets, None)
+
+    assert len(report.facts) == 2
+    assert [fact.role for fact in report.facts] == [
+        "Notion · 담당자 기록",
+        "Gmail · 원문 발신자",
+    ]
+    assert [fact.document_ids for fact in report.facts] == [
+        [notion_document.id],
+        [gmail_original_document.id],
+    ]
+    assert report.detail == (
+        "Notion 기록의 Brown 표기에도 이메일 주소는 Emily의 주소로 동일하게 "
+        "적혀 있어, 최신 담당자 확인이 필요합니다."
+    )

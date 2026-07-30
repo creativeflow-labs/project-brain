@@ -152,7 +152,13 @@ def test_follow_up_restores_subject_and_compares_cross_source_evidence():
             "협업 담당자를 하나로 확정할 수 없습니다."
         )
         assert "**" not in first_payload["answer"]
-        assert first_payload["answer_view"]["facts"]
+        assert [fact["role"] for fact in first_payload["answer_view"]["facts"]] == [
+            "Notion · 담당자 기록",
+            "Gmail · 원문 발신자",
+        ]
+        assert [
+            item["source_type"] for item in first_payload["citations"][:2]
+        ] == ["notion", "gmail"]
         assert {item["source_type"] for item in first_payload["citations"]} >= {
             "notion",
             "gmail",
