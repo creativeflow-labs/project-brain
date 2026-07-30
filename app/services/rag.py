@@ -177,7 +177,7 @@ def answer_question(
         project_id=project_id,
         status=assessment.status,
         trace_json={
-            "search_core_version": "0.5.2-alpha.2",
+            "search_core_version": "0.3.0",
             "search_queries": plan.search_queries,
             "entity_terms": plan.entity_terms,
             "requested_field": plan.requested_field,
