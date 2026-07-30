@@ -8,6 +8,16 @@ from app.services.ingestion import IngestionInput, ingest_document
 from app.services.parser import ParsedSection
 
 
+def test_home_forces_fresh_versioned_static_assets():
+    with TestClient(app) as client:
+        response = client.get("/")
+
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "no-store"
+    assert "/static/styles.css?v=0.4.0-alpha.4" in response.text
+    assert "/static/app.js?v=0.4.0-alpha.4" in response.text
+
+
 def test_upload_search_and_delete_flow():
     with TestClient(app) as client:
         project_response = client.post(

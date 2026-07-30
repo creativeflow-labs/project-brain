@@ -90,7 +90,10 @@ def require_project(db: Session, project_id: str) -> Project:
 
 @app.get("/", response_class=HTMLResponse)
 def home() -> HTMLResponse:
-    return HTMLResponse((Path(__file__).parent / "static" / "index.html").read_text("utf-8"))
+    return HTMLResponse(
+        (Path(__file__).parent / "static" / "index.html").read_text("utf-8"),
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 @app.get("/api/health")
