@@ -126,6 +126,47 @@ function renderMessage(role, text) {
   return wrapper;
 }
 
+function renderAnswerView(bubble, answerView, citations) {
+  const statusLabel = {
+    supported: "확인됨",
+    conflict: "충돌",
+    insufficient: "확인 필요"
+  }[answerView.status] || "확인 필요";
+  const factStatusLabel = {
+    confirmed: "확인",
+    conflicting: "충돌",
+    proposed: "제안",
+    recorded: "기록",
+    unverified: "미확인",
+    outdated: "이전 기록"
+  };
+  const citationNumbers = new Map(
+    citations.map((citation, index) => [citation.document_id, index + 1])
+  );
+  const facts = (answerView.facts || []).map(fact => {
+    const references = [...new Set(
+      (fact.citation_document_ids || [])
+        .map(documentId => citationNumbers.get(documentId))
+        .filter(Boolean)
+    )].map(number => `<span class="fact-reference">[${number}]</span>`).join("");
+    return `<div class="answer-fact">
+      <div class="fact-role">${escapeHtml(fact.role)}</div>
+      <div class="fact-value">${escapeHtml(fact.value)}${references}</div>
+      <span class="fact-status ${escapeHtml(fact.fact_status)}">${escapeHtml(factStatusLabel[fact.fact_status] || "기록")}</span>
+    </div>`;
+  }).join("");
+  bubble.classList.add("answer-bubble");
+  bubble.innerHTML = `<article class="answer-card">
+    <div class="answer-verdict-row">
+      <span class="answer-verdict ${escapeHtml(answerView.status)}">${escapeHtml(statusLabel)}</span>
+    </div>
+    <h3>${escapeHtml(answerView.headline)}</h3>
+    ${facts ? `<div class="answer-facts">${facts}</div>` : ""}
+    ${answerView.next_action ? `<div class="answer-next"><span>다음 확인</span><p>${escapeHtml(answerView.next_action)}</p></div>` : ""}
+    ${answerView.detail ? `<details class="answer-detail"><summary>판정 설명 보기</summary><p>${escapeHtml(answerView.detail)}</p></details>` : ""}
+  </article>`;
+}
+
 function renderEvidence(citations) {
   $("#evidence-count").textContent = citations.length;
   if (!citations.length) {
@@ -194,7 +235,9 @@ async function askQuestion(event) {
       })
     });
     state.threadIds[state.projectId] = result.thread_id;
-    pending.querySelector(".bubble").textContent = result.answer;
+    const bubble = pending.querySelector(".bubble");
+    if (result.answer_view) renderAnswerView(bubble, result.answer_view, result.citations);
+    else bubble.textContent = result.answer;
     renderCurrentState(result.current_state);
     renderEvidence(result.citations);
   } catch (error) {

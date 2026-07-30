@@ -7,6 +7,8 @@ from openai import OpenAI
 
 from app.config import get_settings
 from app.services.search_core.types import (
+    AnswerFact,
+    AnswerReport,
     CurrentStateAssessment,
     EvidenceAssessment,
     EvidencePacket,
@@ -28,7 +30,7 @@ def _contact_values(text: str) -> set[str]:
         for match in re.findall(pattern, text, flags=re.IGNORECASE):
             cleaned = re.split(r"[,<(\n]", match.strip())[0].strip(" *.")
             if cleaned:
-                values.add(cleaned.lower())
+                values.add(cleaned)
     return values
 
 
@@ -55,6 +57,83 @@ def _money_values(text: str) -> set[str]:
     if any(pattern in lowered for pattern in no_offer_patterns):
         values.add("미제안")
     return values
+
+
+def _contact_role(packet: EvidencePacket, text: str) -> str:
+    lowered = text.lower()
+    if any(value in lowered for value in ("최종 승인자", "승인 담당", "approver")):
+        return "최종 승인자"
+    if any(value in lowered for value in ("내부 담당자", "우리 팀 담당자", "사내 담당자")):
+        return "우리 팀 담당자"
+    if any(
+        value in lowered
+        for value in ("제안 담당자", "파트너십", "partnership", "this is", "from:")
+    ):
+        return "외부 제안 담당자"
+    return f"{packet.document.source_type} 담당자 기록"
+
+
+def _money_role(packet: EvidencePacket, text: str) -> str:
+    lowered = text.lower()
+    if any(value in lowered for value in ("최종 금액", "확정 금액", "수락", "승인")):
+        return "최종 승인 금액"
+    if any(
+        value in lowered
+        for value in ("저희 견적", "우리 측 견적", "our rate", "our quote")
+    ):
+        return "우리 측 견적"
+    if any(
+        value in lowered
+        for value in (
+            "제안하지 않았",
+            "제안이 없",
+            "provide your rate",
+            "협업 제안",
+            "collaboration fee",
+        )
+    ):
+        return "상대방 제안 금액"
+    return f"{packet.document.source_type} 금액 기록"
+
+
+def _report_fact(
+    plan: QueryPlan, packet: EvidencePacket, value: str, status: str
+) -> AnswerFact:
+    role = (
+        _contact_role(packet, packet.context_text)
+        if plan.requested_field == "contact"
+        else _money_role(packet, packet.context_text)
+        if plan.requested_field == "money"
+        else f"{packet.document.source_type} 기록"
+    )
+    return AnswerFact(
+        role=role,
+        value=value,
+        fact_status=status,
+        document_ids=[packet.document.id],
+    )
+
+
+def _report_headline(plan: QueryPlan, status: str, value: str | None = None) -> str:
+    if status == "conflict":
+        return {
+            "contact": "협업 담당자를 하나로 확정할 수 없습니다.",
+            "money": "현재 확정된 협업비를 확인할 수 없습니다.",
+            "date": "일정을 하나로 확정할 수 없습니다.",
+        }.get(plan.requested_field, "기록이 충돌해 답변을 하나로 확정할 수 없습니다.")
+    if status == "insufficient":
+        return {
+            "contact": "현재 근거만으로 담당자를 확인할 수 없습니다.",
+            "money": "현재 근거만으로 확정된 협업비를 확인할 수 없습니다.",
+            "date": "현재 근거만으로 일정을 확인할 수 없습니다.",
+        }.get(plan.requested_field, "현재 근거만으로 답변을 확인할 수 없습니다.")
+    if value:
+        return {
+            "contact": f"확인된 담당자는 {value}입니다.",
+            "money": f"확인된 금액은 {value}입니다.",
+            "date": f"확인된 일정은 {value}입니다.",
+        }.get(plan.requested_field, f"확인된 값은 {value}입니다.")
+    return "프로젝트 근거에서 답변을 확인했습니다."
 
 
 def _fallback_assessment(
@@ -124,6 +203,12 @@ def _fallback_assessment(
             status="insufficient",
             answer="질문에 답할 수 있는 프로젝트 근거를 찾지 못했습니다.",
             cited_document_ids=[],
+            report=AnswerReport(
+                answer_type="insufficient",
+                status="insufficient",
+                headline=_report_headline(plan, "insufficient"),
+                next_action="관련 원문을 연결하거나 검색 범위를 확인하세요.",
+            ),
         )
 
     extractor = {
@@ -142,10 +227,34 @@ def _fallback_assessment(
     all_values = set().union(
         *(values for _, values in values_by_document)
     ) if values_by_document else set()
-    source_types = {
-        packet.document.source_type for packet, _ in values_by_document
+    report_facts = [
+        _report_fact(plan, packet, value, "recorded")
+        for packet, values in values_by_document
+        for value in sorted(values)
+    ]
+    values_by_role: dict[str, set[str]] = {}
+    sources_by_role: dict[str, set[str]] = {}
+    for fact, (packet, _) in zip(
+        report_facts,
+        [
+            (packet, value)
+            for packet, values in values_by_document
+            for value in sorted(values)
+        ],
+        strict=True,
+    ):
+        values_by_role.setdefault(fact.role, set()).add(fact.value.lower())
+        sources_by_role.setdefault(fact.role, set()).add(packet.document.source_type)
+    conflicting_roles = {
+        role
+        for role, values in values_by_role.items()
+        if len(values) > 1 and len(sources_by_role.get(role, set())) > 1
     }
-    if len(all_values) > 1 and len(source_types) > 1:
+    if conflicting_roles:
+        for fact in report_facts:
+            fact.fact_status = (
+                "conflicting" if fact.role in conflicting_roles else "recorded"
+            )
         details = "; ".join(
             f"{packet.document.source_type} '{packet.document.title}': "
             f"{', '.join(sorted(values))}"
@@ -164,16 +273,40 @@ def _fallback_assessment(
             retry_queries=[
                 f"{' '.join(plan.entity_terms[:5])} {plan.requested_field} 최신 변경 확정"
             ],
+            report=AnswerReport(
+                answer_type="conflict",
+                status="conflict",
+                headline=_report_headline(plan, "conflict"),
+                facts=report_facts,
+                detail="같은 역할과 항목에 서로 다른 값이 기록되어 있습니다.",
+                next_action="최신 원문과 해당 항목의 결정권자를 확인하세요.",
+            ),
         )
 
     if values_by_document:
         rendered = ", ".join(sorted(all_values))
+        for fact in report_facts:
+            fact.fact_status = "confirmed"
+        role_count = len({fact.role for fact in report_facts})
+        headline = (
+            "담당자 정보를 역할별로 확인했습니다."
+            if plan.requested_field == "contact" and role_count > 1
+            else "금액 정보를 역할별로 확인했습니다."
+            if plan.requested_field == "money" and role_count > 1
+            else _report_headline(plan, "supported", rendered)
+        )
         return EvidenceAssessment(
             status="supported",
             answer=f"프로젝트 근거에서 확인된 값은 {rendered}입니다.",
             cited_document_ids=[
                 packet.document.id for packet, _ in values_by_document
             ],
+            report=AnswerReport(
+                answer_type="direct",
+                status="supported",
+                headline=headline,
+                facts=report_facts,
+            ),
         )
 
     top = packets[0]
@@ -184,6 +317,19 @@ def _fallback_assessment(
             f"가장 관련성이 높은 근거는 다음과 같습니다.\n“{top.context_text[:900]}”"
         ),
         cited_document_ids=[top.document.id],
+        report=AnswerReport(
+            answer_type="direct",
+            status="supported",
+            headline="가장 관련성이 높은 프로젝트 근거를 찾았습니다.",
+            facts=[
+                AnswerFact(
+                    role=f"{top.document.source_type} 근거",
+                    value=top.context_text[:180],
+                    fact_status="recorded",
+                    document_ids=[top.document.id],
+                )
+            ],
+        ),
     )
 
 
@@ -212,6 +358,42 @@ def _llm_assessment(
                 "enum": ["supported", "conflict", "insufficient"],
             },
             "answer": {"type": "string"},
+            "headline": {"type": "string"},
+            "detail": {"type": ["string", "null"]},
+            "facts": {
+                "type": "array",
+                "maxItems": 4,
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "role": {"type": "string"},
+                        "value": {"type": "string"},
+                        "fact_status": {
+                            "type": "string",
+                            "enum": [
+                                "confirmed",
+                                "conflicting",
+                                "proposed",
+                                "recorded",
+                                "unverified",
+                                "outdated",
+                            ],
+                        },
+                        "citation_document_ids": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                        },
+                    },
+                    "required": [
+                        "role",
+                        "value",
+                        "fact_status",
+                        "citation_document_ids",
+                    ],
+                    "additionalProperties": False,
+                },
+            },
+            "next_action": {"type": ["string", "null"]},
             "cited_document_ids": {
                 "type": "array",
                 "items": {"type": "string"},
@@ -226,6 +408,10 @@ def _llm_assessment(
         "required": [
             "status",
             "answer",
+            "headline",
+            "detail",
+            "facts",
+            "next_action",
             "cited_document_ids",
             "conflicts",
             "retry_queries",
@@ -246,8 +432,13 @@ def _llm_assessment(
                 "상태 질문에는 함께 제공된 current_state 판정을 우선 적용하고, 완료 주장과 완료 승인을 "
                 "구분한다. 완료 뒤에 더 최신 수정 요청이 있으면 업무는 다시 열린 상태다. 문서의 수정 "
                 "시각과 본문 사건 시각을 혼동하지 않는다. 근거가 직접 지지하면 supported, 부족하면 "
-                "insufficient다. 답변의 핵심 주장 뒤에는 입력 "
-                "배열 순서에 따른 [1] 형식의 인용을 붙인다. 충돌·부족 시 추가 검색어를 제안한다."
+                "insufficient다. 결론은 headline 한 문장에 먼저 쓴다. facts에는 사용자가 비교해야 할 "
+                "사실을 최대 4개만 넣고 역할을 구체적으로 구분한다. 담당자는 외부 연락 담당자, 우리 팀 "
+                "담당자, 승인자를 구분하고, 금액은 상대방 제안, 우리 측 견적, 내부 메모, 최종 승인 "
+                "금액을 구분한다. 역할이 다른 값은 충돌이 아니다. 제안·견적만 있고 수락 근거가 없으면 "
+                "확정 금액으로 쓰지 않는다. answer와 detail은 최대 두 문장으로 요약한다. 답변의 핵심 "
+                "주장 뒤에는 입력 배열 순서에 따른 [1] 형식의 인용을 붙인다. 충돌·부족 시 추가 검색어를 "
+                "제안한다."
             ),
             input=json.dumps(
                 {
@@ -278,6 +469,28 @@ def _llm_assessment(
             for document_id in payload["cited_document_ids"]
             if document_id in valid_ids
         ]
+        facts = [
+            AnswerFact(
+                role=item["role"].strip(),
+                value=item["value"].strip(),
+                fact_status=item["fact_status"],
+                document_ids=[
+                    document_id
+                    for document_id in item["citation_document_ids"]
+                    if document_id in valid_ids
+                ],
+            )
+            for item in payload["facts"]
+            if item["role"].strip() and item["value"].strip()
+        ]
+        cited_ids = list(
+            dict.fromkeys(
+                [
+                    *cited_ids,
+                    *(document_id for fact in facts for document_id in fact.document_ids),
+                ]
+            )
+        )
         assessment = EvidenceAssessment(
             status=payload["status"],
             answer=payload["answer"].strip(),
@@ -286,6 +499,24 @@ def _llm_assessment(
             retry_queries=[
                 query.strip() for query in payload["retry_queries"] if query.strip()
             ],
+            report=AnswerReport(
+                answer_type=(
+                    "conflict"
+                    if payload["status"] == "conflict"
+                    else "insufficient"
+                    if payload["status"] == "insufficient"
+                    else "direct"
+                ),
+                status=payload["status"],
+                headline=payload["headline"].strip(),
+                facts=facts,
+                detail=payload["detail"].strip() if payload["detail"] else None,
+                next_action=(
+                    payload["next_action"].strip()
+                    if payload["next_action"]
+                    else None
+                ),
+            ),
         )
         if current_state is not None:
             assessment.status = current_state.evidence_status

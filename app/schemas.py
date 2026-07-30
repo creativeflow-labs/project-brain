@@ -92,6 +92,29 @@ class CurrentStateOut(BaseModel):
     timeline: list[TimelineEventOut] = Field(default_factory=list)
 
 
+class AnswerFactOut(BaseModel):
+    role: str
+    value: str
+    fact_status: Literal[
+        "confirmed",
+        "conflicting",
+        "proposed",
+        "recorded",
+        "unverified",
+        "outdated",
+    ]
+    citation_document_ids: list[str] = Field(default_factory=list)
+
+
+class AnswerViewOut(BaseModel):
+    type: Literal["direct", "conflict", "insufficient", "state"]
+    status: Literal["supported", "conflict", "insufficient"]
+    headline: str
+    facts: list[AnswerFactOut] = Field(default_factory=list)
+    detail: str | None = None
+    next_action: str | None = None
+
+
 class AskResponse(BaseModel):
     answer: str
     mode: str
@@ -102,6 +125,7 @@ class AskResponse(BaseModel):
     trace_id: str
     conflicts: list[str] = Field(default_factory=list)
     current_state: CurrentStateOut | None = None
+    answer_view: AnswerViewOut
 
 
 class NotionImportRequest(BaseModel):

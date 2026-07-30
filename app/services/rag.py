@@ -13,7 +13,13 @@ from app.models import (
     WorkStateSnapshot,
     utcnow,
 )
-from app.schemas import AskResponse, Citation, CurrentStateOut
+from app.schemas import AnswerViewOut, AskResponse, Citation, CurrentStateOut
+from app.services.search_core.reporting import (
+    answer_report_to_dict,
+    render_answer_text,
+    report_document_ids,
+    validate_answer_report,
+)
 from app.services.search_core.state_engine import current_state_to_dict
 from app.services.search_core.types import EvidencePacket
 from app.services.search_core.workflow import search_graph
@@ -123,8 +129,21 @@ def answer_question(
     current_state_payload = (
         current_state_to_dict(current_state) if current_state is not None else None
     )
+    answer_report = validate_answer_report(plan, assessment, packets, current_state)
+    report_ids = report_document_ids(answer_report)
+    assessment.cited_document_ids = list(
+        dict.fromkeys([*assessment.cited_document_ids, *report_ids])
+    )
+    packet_positions = {
+        packet.document.id: position
+        for position, packet in enumerate(packets, start=1)
+    }
+    answer_report_payload = answer_report_to_dict(answer_report)
     answer, citations = _answer_and_citations(
-        assessment.answer, packets, assessment.cited_document_ids, top_k
+        render_answer_text(answer_report, packet_positions),
+        packets,
+        assessment.cited_document_ids,
+        top_k,
     )
 
     if not packets:
@@ -139,7 +158,7 @@ def answer_question(
         project_id=project_id,
         status=assessment.status,
         trace_json={
-            "search_core_version": "0.4.0-alpha.1",
+            "search_core_version": "0.4.0-alpha.2",
             "search_queries": plan.search_queries,
             "entity_terms": plan.entity_terms,
             "requested_field": plan.requested_field,
@@ -150,6 +169,7 @@ def answer_question(
             "cited_document_ids": assessment.cited_document_ids,
             "retry_count": result.get("retry_count", 0),
             "current_state": current_state_payload,
+            "answer_view": answer_report_payload,
         },
     )
     db.add(trace)
@@ -173,6 +193,7 @@ def answer_question(
                 "document_ids": assessment.cited_document_ids,
                 "conflicts": assessment.conflicts,
                 "current_state": current_state_payload,
+                "answer_view": answer_report_payload,
             },
         )
     )
@@ -204,4 +225,5 @@ def answer_question(
             if current_state_payload is not None
             else None
         ),
+        answer_view=AnswerViewOut.model_validate(answer_report_payload),
     )

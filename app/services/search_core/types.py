@@ -9,6 +9,15 @@ from sqlalchemy.orm import Session
 from app.models import Chunk, ConversationMessage, Document
 
 EvidenceStatus = Literal["supported", "conflict", "insufficient"]
+AnswerType = Literal["direct", "conflict", "insufficient", "state"]
+FactStatus = Literal[
+    "confirmed",
+    "conflicting",
+    "proposed",
+    "recorded",
+    "unverified",
+    "outdated",
+]
 WorkState = Literal[
     "unknown",
     "planned",
@@ -85,12 +94,31 @@ class CurrentStateAssessment:
 
 
 @dataclass
+class AnswerFact:
+    role: str
+    value: str
+    fact_status: FactStatus
+    document_ids: list[str] = field(default_factory=list)
+
+
+@dataclass
+class AnswerReport:
+    answer_type: AnswerType
+    status: EvidenceStatus
+    headline: str
+    facts: list[AnswerFact] = field(default_factory=list)
+    detail: str | None = None
+    next_action: str | None = None
+
+
+@dataclass
 class EvidenceAssessment:
     status: EvidenceStatus
     answer: str
     cited_document_ids: list[str]
     conflicts: list[str] = field(default_factory=list)
     retry_queries: list[str] = field(default_factory=list)
+    report: AnswerReport | None = None
 
 
 class SearchState(TypedDict, total=False):

@@ -147,6 +147,12 @@ def test_follow_up_restores_subject_and_compares_cross_source_evidence():
         first_payload = first.json()
         assert first_payload["thread_id"]
         assert first_payload["evidence_status"] == "conflict"
+        assert first_payload["answer_view"]["type"] == "conflict"
+        assert first_payload["answer_view"]["headline"] == (
+            "협업 담당자를 하나로 확정할 수 없습니다."
+        )
+        assert "**" not in first_payload["answer"]
+        assert first_payload["answer_view"]["facts"]
         assert {item["source_type"] for item in first_payload["citations"]} >= {
             "notion",
             "gmail",
@@ -170,6 +176,10 @@ def test_follow_up_restores_subject_and_compares_cross_source_evidence():
         assert follow_up_payload["thread_id"] == first_payload["thread_id"]
         assert "magiclight" in follow_up_payload["resolved_question"].lower()
         assert follow_up_payload["evidence_status"] == "conflict"
+        assert follow_up_payload["answer_view"]["type"] == "conflict"
+        assert follow_up_payload["answer_view"]["headline"] == (
+            "현재 확정된 협업비를 확인할 수 없습니다."
+        )
         assert {item["source_type"] for item in follow_up_payload["citations"]} >= {
             "notion",
             "gmail",
@@ -260,6 +270,10 @@ def test_status_question_returns_current_state_and_persists_snapshot():
         payload = response.json()
         assert payload["current_state"]["state"] == "revision_requested"
         assert payload["current_state"]["label"] == "수정 요청"
+        assert payload["answer_view"]["type"] == "state"
+        assert payload["answer_view"]["headline"] == (
+            "현재 업무 상태는 수정 요청입니다."
+        )
         assert "완료 확인" not in payload["answer"]
         assert {item["source_type"] for item in payload["citations"]} >= {
             "notion",
