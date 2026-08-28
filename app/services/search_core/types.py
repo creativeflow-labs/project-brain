@@ -66,6 +66,7 @@ class SearchCandidate:
     vector_score: float = 0.0
     lexical_score: float = 0.0
     exact_score: float = 0.0
+    hierarchy_score: float = 0.0
 
 
 @dataclass

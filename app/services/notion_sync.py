@@ -9,7 +9,11 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
-from app.connectors.notion import NotionApiError, NotionConnector
+from app.connectors.notion import (
+    NOTION_METADATA_SCHEMA_VERSION,
+    NotionApiError,
+    NotionConnector,
+)
 from app.db import SessionLocal
 from app.models import ConnectorCredential, Document
 from app.services.security import decrypt_json, encrypt_json
@@ -232,7 +236,8 @@ def sync_notion_project(db: Session, project_id: str, force: bool = False) -> di
                 and existing
                 and discovered_edited
                 and existing_metadata.get("last_edited_time") == discovered_edited
-                and existing_metadata.get("metadata_schema_version", 0) >= 2
+                and existing_metadata.get("metadata_schema_version", 0)
+                >= NOTION_METADATA_SCHEMA_VERSION
             ):
                 unchanged += 1
                 for child_id in existing_metadata.get("child_page_ids", []):

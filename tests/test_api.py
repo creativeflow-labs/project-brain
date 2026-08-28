@@ -6,6 +6,7 @@ from app.main import app
 from app.models import ConversationMessage, SearchTrace, WorkStateSnapshot
 from app.services.ingestion import IngestionInput, ingest_document
 from app.services.parser import ParsedSection
+from app.version import APP_VERSION
 
 
 def test_home_forces_fresh_versioned_static_assets():
@@ -14,8 +15,8 @@ def test_home_forces_fresh_versioned_static_assets():
 
     assert response.status_code == 200
     assert response.headers["cache-control"] == "no-store"
-    assert "/static/styles.css?v=0.5.2-alpha.2" in response.text
-    assert "/static/app.js?v=0.5.2-alpha.2" in response.text
+    assert f"/static/styles.css?v={APP_VERSION}" in response.text
+    assert f"/static/app.js?v={APP_VERSION}" in response.text
 
 
 def test_user_message_bubble_is_anchored_to_the_right_edge():

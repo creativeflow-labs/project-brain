@@ -24,6 +24,23 @@ from app.services.search_core.scoring import (
 from app.services.search_core.types import EvidencePacket, QueryPlan, SearchCandidate
 
 settings = get_settings()
+HIERARCHY_METADATA_KEYS = {
+    "ancestor_page_ids",
+    "ancestor_titles",
+    "hierarchy_path",
+    "hierarchy_depth",
+    "hierarchy_complete",
+}
+GENERIC_HIERARCHY_TERMS = {
+    "자료",
+    "업무",
+    "회의",
+    "프로젝트",
+    "기록",
+    "문서",
+    "페이지",
+    "전체",
+}
 
 DATE_KEYS = {
     "published_at": (
@@ -50,8 +67,48 @@ DATE_KEYS = {
 
 
 def _row_text(chunk: Chunk, document: Document) -> str:
-    metadata = json.dumps(document.metadata_json or {}, ensure_ascii=False)
+    metadata = json.dumps(
+        {
+            key: value
+            for key, value in (document.metadata_json or {}).items()
+            if key not in HIERARCHY_METADATA_KEYS
+        },
+        ensure_ascii=False,
+    )
     return f"{document.title}\n{metadata}\n{chunk.text}"
+
+
+def _hierarchy_text(document: Document) -> str:
+    if document.source_type not in {"notion", "notion_attachment"}:
+        return ""
+    titles = (document.metadata_json or {}).get("ancestor_titles", [])
+    if not isinstance(titles, list):
+        return ""
+    return "\n".join(str(title).strip() for title in titles if str(title).strip())
+
+
+def _hierarchy_match_score(query: str, hierarchy_text: str) -> float:
+    if not hierarchy_text:
+        return 0.0
+    query_tokens = set(tokenize(query)) - GENERIC_HIERARCHY_TERMS
+    hierarchy_tokens = set(tokenize(hierarchy_text)) - GENERIC_HIERARCHY_TERMS
+    if not query_tokens or not hierarchy_tokens:
+        return 0.0
+    overlap = query_tokens & hierarchy_tokens
+    if not overlap:
+        return 0.0
+    coverage = len(overlap) / max(1, len(hierarchy_tokens))
+    normalized_query = re.sub(r"\s+", " ", query.lower()).strip()
+    exact_title = any(
+        normalized_title in normalized_query
+        for title in hierarchy_text.splitlines()
+        if (
+            normalized_title := re.sub(r"\s+", " ", title.lower()).strip()
+        )
+        and len(normalized_title) >= 3
+        and normalized_title not in GENERIC_HIERARCHY_TERMS
+    )
+    return min(1.0, coverage + (0.35 if exact_title else 0.0))
 
 
 def _normalise_datetime(value: datetime) -> datetime:
@@ -221,6 +278,7 @@ def retrieve_candidates(
     texts = [_row_text(chunk, document) for chunk, document in rows]
     lowered_texts = [text.lower() for text in texts]
     lowered_titles = [document.title.lower() for _, document in rows]
+    hierarchy_texts = [_hierarchy_text(document) for _, document in rows]
     bm25_corpus = BM25Corpus.from_texts(texts)
     vectors = [list(chunk.embedding or []) for chunk, _ in rows]
     vector_norms = [vector_norm(vector) if vector else 1.0 for vector in vectors]
@@ -228,6 +286,7 @@ def retrieve_candidates(
     vector_best: defaultdict[int, float] = defaultdict(float)
     lexical_best: defaultdict[int, float] = defaultdict(float)
     exact_best: defaultdict[int, float] = defaultdict(float)
+    hierarchy_best: defaultdict[int, float] = defaultdict(float)
 
     for query, query_embedding in zip(plan.search_queries, embeddings, strict=True):
         query_tokens = tokenize(query)
@@ -267,6 +326,10 @@ def retrieve_candidates(
             vector_best[index] = max(vector_best[index], vector_score)
             lexical_best[index] = max(lexical_best[index], lexical_scores[index])
             exact_best[index] = max(exact_best[index], exact_score)
+            hierarchy_best[index] = max(
+                hierarchy_best[index],
+                _hierarchy_match_score(query, hierarchy_texts[index]),
+            )
 
         for weight, scores in (
             (1.0, vector_scores),
@@ -289,6 +352,7 @@ def retrieve_candidates(
             + lexical_best[index] * 0.18
             + vector_best[index] * 0.12
             + exact_best[index] * 0.15
+            + hierarchy_best[index] * 0.10
         )
         combined.append((index, min(score, 1.0)))
 
@@ -346,6 +410,7 @@ def retrieve_candidates(
                 vector_score=vector_best[index],
                 lexical_score=lexical_best[index],
                 exact_score=exact_best[index],
+                hierarchy_score=hierarchy_best[index],
             )
         )
     return candidates
@@ -451,6 +516,10 @@ def build_evidence_packets(
         )
         metadata = document.metadata_json or {}
         header_parts = [f"문서 제목: {document.title}"]
+        if document.source_type in {"notion", "notion_attachment"} and metadata.get(
+            "hierarchy_path"
+        ):
+            header_parts.append(f"Notion 경로: {metadata['hierarchy_path']}")
         for key in ("from", "to", "date", "thread_id", "last_edited_time"):
             if metadata.get(key):
                 header_parts.append(f"{key}: {metadata[key]}")

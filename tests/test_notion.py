@@ -207,6 +207,95 @@ def test_notion_page_sync_indexes_properties_body_and_child_page():
     assert "김민서" in "\n".join(chunk.text for chunk in chunks)
 
 
+def test_notion_page_sync_records_accessible_parent_hierarchy():
+    parent_id = "99999999-9999-9999-9999-999999999999"
+    child_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+    block_id = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == f"/v1/pages/{parent_id}":
+            return _response(
+                200,
+                {
+                    "object": "page",
+                    "id": parent_id,
+                    "parent": {"type": "workspace", "workspace": True},
+                    "properties": {
+                        "title": {
+                            "type": "title",
+                            "title": [{"plain_text": "AI 웨비나"}],
+                        }
+                    },
+                },
+            )
+        if request.url.path == f"/v1/blocks/{child_id}/children":
+            return _response(
+                200,
+                {
+                    "results": [
+                        {
+                            "object": "block",
+                            "id": block_id,
+                            "type": "paragraph",
+                            "paragraph": {
+                                "rich_text": [
+                                    {"plain_text": "에이전트 설계와 바이브코딩 사례"}
+                                ]
+                            },
+                            "has_children": False,
+                        }
+                    ],
+                    "has_more": False,
+                    "next_cursor": None,
+                },
+            )
+        return _response(404, {"message": "not found", "code": "object_not_found"})
+
+    db = SessionLocal()
+    project = Project(name="Notion 상하위 경로 동기화 테스트")
+    db.add(project)
+    db.commit()
+    db.refresh(project)
+    page = {
+        "object": "page",
+        "id": child_id,
+        "url": "https://notion.so/vibe-coding",
+        "last_edited_time": "2026-08-29T00:00:00.000Z",
+        "parent": {"type": "page_id", "page_id": parent_id},
+        "properties": {
+            "title": {
+                "type": "title",
+                "title": [{"plain_text": "김그륜님의 바이브코딩"}],
+            }
+        },
+    }
+    connector = NotionConnector(
+        "test-token-value", transport=httpx.MockTransport(handler), sleep=lambda _: None
+    )
+    try:
+        result = connector.sync_page(db, project.id, page)
+    finally:
+        connector.close()
+
+    document = db.scalar(
+        select(Document).where(
+            Document.project_id == project.id,
+            Document.external_id == child_id,
+        )
+    )
+    db.close()
+
+    assert result.pages == 1
+    assert result.warnings == []
+    assert document.metadata_json["metadata_schema_version"] == 3
+    assert document.metadata_json["ancestor_page_ids"] == [parent_id]
+    assert document.metadata_json["ancestor_titles"] == ["AI 웨비나"]
+    assert document.metadata_json["hierarchy_path"] == (
+        "AI 웨비나 > 김그륜님의 바이브코딩"
+    )
+    assert document.metadata_json["hierarchy_complete"] is True
+
+
 def test_notion_connection_encrypts_token_and_sync_status_hides_it(monkeypatch):
     class FakeConnector:
         def __init__(self, token: str):

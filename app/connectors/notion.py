@@ -22,6 +22,8 @@ from app.services.record_metadata import (
 )
 
 settings = get_settings()
+NOTION_METADATA_SCHEMA_VERSION = 3
+NOTION_HIERARCHY_MAX_DEPTH = 8
 
 
 class NotionApiError(RuntimeError):
@@ -128,6 +130,7 @@ class NotionConnector:
         sleep: Callable[[float], None] = time.sleep,
     ) -> None:
         self.sleep = sleep
+        self._page_index: dict[str, dict] = {}
         self.client = httpx.Client(
             timeout=30,
             transport=transport,
@@ -179,7 +182,111 @@ class NotionConnector:
         }
 
     def fetch_page(self, page_id: str) -> dict:
-        return self._request("GET", f"/pages/{normalize_notion_id(page_id)}")
+        page = self._request("GET", f"/pages/{normalize_notion_id(page_id)}")
+        self._remember_page(page)
+        return page
+
+    def _remember_page(self, page: dict) -> None:
+        page_id = page.get("id")
+        if not isinstance(page_id, str) or not page_id:
+            return
+        self._page_index[page_id] = page
+        try:
+            self._page_index[normalize_notion_id(page_id)] = page
+        except ValueError:
+            pass
+
+    def _known_page(self, page_id: str) -> dict | None:
+        page = self._page_index.get(page_id)
+        if page is not None:
+            return page
+        try:
+            return self._page_index.get(normalize_notion_id(page_id))
+        except ValueError:
+            return None
+
+    def _hierarchy_metadata(
+        self, page: dict, current_title: str
+    ) -> tuple[dict, list[str]]:
+        """현재 페이지의 접근 가능한 상위 페이지 경로를 계산합니다.
+
+        상위 페이지 본문은 가져오지 않고 제목과 부모 관계만 사용합니다. 접근
+        권한이 없거나 관계가 불완전해도 현재 페이지 동기화는 계속 진행합니다.
+        """
+
+        self._remember_page(page)
+        current = page
+        current_page_id = str(page.get("id") or "")
+        visited = {current_page_id}
+        try:
+            visited.add(normalize_notion_id(current_page_id))
+        except ValueError:
+            pass
+        ancestors: list[tuple[str, str]] = []
+        warnings: list[str] = []
+        complete = True
+
+        for _ in range(NOTION_HIERARCHY_MAX_DEPTH):
+            parent = current.get("parent") or {}
+            if parent.get("type") != "page_id":
+                break
+            parent_id = parent.get("page_id")
+            if not isinstance(parent_id, str) or not parent_id:
+                complete = False
+                warnings.append("Notion 상위 페이지 ID를 확인하지 못했습니다.")
+                break
+            try:
+                normalized_parent_id = normalize_notion_id(parent_id)
+            except ValueError:
+                normalized_parent_id = parent_id
+            if normalized_parent_id in visited or parent_id in visited:
+                complete = False
+                warnings.append("Notion 상위 페이지 관계의 순환 참조를 감지했습니다.")
+                break
+            visited.update({parent_id, normalized_parent_id})
+
+            try:
+                parent_page = self._known_page(parent_id)
+                if parent_page is None or _page_title(parent_page) == "Notion 페이지":
+                    parent_page = self.fetch_page(parent_id)
+            except NotionApiError as exc:
+                if exc.status_code in {403, 404}:
+                    complete = False
+                    warnings.append(
+                        "접근 권한이 없는 Notion 상위 페이지는 경로에서 제외했습니다."
+                    )
+                    break
+                raise
+            parent_title = _page_title(parent_page).strip()
+            ancestors.append(
+                (
+                    str(parent_page.get("id") or normalized_parent_id),
+                    parent_title if parent_title != "Notion 페이지" else "",
+                )
+            )
+            current = parent_page
+        else:
+            parent = current.get("parent") or {}
+            if parent.get("type") == "page_id":
+                complete = False
+                warnings.append(
+                    f"Notion 상위 경로는 최대 {NOTION_HIERARCHY_MAX_DEPTH}단계까지만 반영했습니다."
+                )
+
+        ancestors.reverse()
+        ancestor_ids = [page_id for page_id, _ in ancestors]
+        ancestor_titles = [title for _, title in ancestors if title]
+        path_titles = [*ancestor_titles]
+        if current_title and current_title != "Notion 페이지":
+            path_titles.append(current_title)
+        metadata = {
+            "ancestor_page_ids": ancestor_ids,
+            "ancestor_titles": ancestor_titles,
+            "hierarchy_path": " > ".join(path_titles),
+            "hierarchy_depth": len(ancestor_ids),
+            "hierarchy_complete": complete,
+        }
+        return metadata, warnings
 
     def _search(self, object_type: str, max_items: int) -> tuple[list[dict], bool]:
         results: list[dict] = []
@@ -239,6 +346,7 @@ class NotionConnector:
         for page in pages:
             if page.get("id"):
                 result.pages[page["id"]] = page
+                self._remember_page(page)
 
         remaining = max(0, max_pages - len(result.pages))
         if remaining == 0:
@@ -266,6 +374,7 @@ class NotionConnector:
                     page["_project_brain_collection_id"] = source_id
                     page["_project_brain_collection_title"] = source_title
                     result.pages[page["id"]] = page
+                    self._remember_page(page)
             except Exception as exc:
                 result.warnings.append(
                     f"데이터 소스 {source.get('id', '')[:8]} 조회 실패: {exc}"
@@ -365,6 +474,8 @@ class NotionConnector:
         result = NotionPageSyncResult()
         page_id = page["id"]
         title = _page_title(page)
+        hierarchy_metadata, hierarchy_warnings = self._hierarchy_metadata(page, title)
+        result.warnings.extend(hierarchy_warnings)
         blocks = self._all_blocks(page_id)
         sections: list[ParsedSection] = []
         property_lines = [
@@ -414,7 +525,7 @@ class NotionConnector:
         record_type = infer_record_type(title, page_text)
         recorded_at = parse_recorded_datetime(title)
         metadata = {
-            "metadata_schema_version": 2,
+            "metadata_schema_version": NOTION_METADATA_SCHEMA_VERSION,
             "last_edited_time": page.get("last_edited_time"),
             "child_page_ids": sorted(result.child_page_ids),
             "parent_type": parent_type,
@@ -423,6 +534,7 @@ class NotionConnector:
             "database_id": parent.get("database_id"),
             "collection_id": collection_id,
             "collection_title": page.get("_project_brain_collection_title"),
+            **hierarchy_metadata,
         }
         if record_type:
             metadata["record_type"] = record_type
@@ -486,7 +598,9 @@ class NotionConnector:
                         source_url=page.get("url"),
                         metadata={
                             "parent_page_id": page_id,
+                            "parent_page_title": title,
                             "last_edited_time": page.get("last_edited_time"),
+                            **hierarchy_metadata,
                         },
                         warnings=parsed.warnings,
                         sections=parsed.sections,

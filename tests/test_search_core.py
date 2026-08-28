@@ -300,3 +300,58 @@ def test_scoped_video_collection_excludes_receipts_and_returns_complete_list():
         assert "총 3건" in assessment.answer
         assert all(title in assessment.answer for title in ("첫 번째 영상", "두 번째 영상", "세 번째 영상"))
         assert "영수증" not in assessment.answer
+
+
+def test_notion_ancestor_title_recalls_child_without_changing_body_evidence():
+    init_db()
+    with SessionLocal() as db:
+        project = Project(name="Notion 상위 경로 검색")
+        db.add(project)
+        db.commit()
+        db.refresh(project)
+        child, _ = ingest_document(
+            db,
+            IngestionInput(
+                project_id=project.id,
+                source_type="notion",
+                external_id="vibe-coding-child",
+                title="김그륜님의 바이브코딩",
+                text="에이전트 설계 실습과 현업 적용 사례를 다룹니다.",
+                metadata={
+                    "ancestor_titles": ["AI 웨비나"],
+                    "hierarchy_path": "AI 웨비나 > 김그륜님의 바이브코딩",
+                },
+            ),
+        )
+        ingest_document(
+            db,
+            IngestionInput(
+                project_id=project.id,
+                source_type="notion",
+                external_id="generic-work-page",
+                title="일반 업무 자료",
+                text="반복 업무와 문서 작성 방법을 정리합니다.",
+                metadata={"ancestor_titles": ["공유 자료"]},
+            ),
+        )
+        plan = QueryPlan(
+            original_question="AI 웨비나의 김그륜 바이브코딩 자료를 알려줘",
+            resolved_question="AI 웨비나의 김그륜 바이브코딩 자료를 알려줘",
+            search_queries=["AI 웨비나 김그륜 바이브코딩"],
+            entity_terms=["ai", "웨비나", "김그륜", "바이브코딩"],
+        )
+
+        candidates = retrieve_candidates(db, project.id, plan)
+        packets = build_evidence_packets(db, project.id, plan, candidates)
+
+        selected = next(
+            candidate
+            for candidate in candidates
+            if candidate.document.id == child.id
+        )
+        packet = next(packet for packet in packets if packet.document.id == child.id)
+        assert selected.hierarchy_score > 0
+        assert "Notion 경로: AI 웨비나 > 김그륜님의 바이브코딩" in (
+            packet.context_text
+        )
+        assert "에이전트 설계 실습" in packet.context_text
