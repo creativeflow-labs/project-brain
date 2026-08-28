@@ -4,7 +4,11 @@ from sqlalchemy import select
 
 from app.db import SessionLocal, init_db
 from app.models import Chunk, Document, Project
-from app.services.ingestion import IngestionInput, ingest_document
+from app.services.ingestion import (
+    IngestionInput,
+    build_chunk_search_text,
+    ingest_document,
+)
 from app.services.search_core.retrieval import (
     build_evidence_packets,
     retrieve_candidates,
@@ -355,3 +359,46 @@ def test_notion_ancestor_title_recalls_child_without_changing_body_evidence():
             packet.context_text
         )
         assert "에이전트 설계 실습" in packet.context_text
+
+
+def test_unchanged_document_refreshes_precomputed_search_text():
+    init_db()
+    with SessionLocal() as db:
+        project = Project(name="검색 인덱스 메타데이터 갱신")
+        db.add(project)
+        db.commit()
+        db.refresh(project)
+        document, changed = ingest_document(
+            db,
+            IngestionInput(
+                project_id=project.id,
+                source_type="notion",
+                external_id="hierarchy-search-refresh",
+                title="김그륜님의 바이브코딩",
+                text="에이전트 설계 실습 자료입니다.",
+                metadata={"ancestor_titles": ["기존 상위 페이지"]},
+            ),
+        )
+        assert changed is True
+
+        _, changed = ingest_document(
+            db,
+            IngestionInput(
+                project_id=project.id,
+                source_type="notion",
+                external_id="hierarchy-search-refresh",
+                title="김그륜님의 바이브코딩",
+                text="에이전트 설계 실습 자료입니다.",
+                metadata={"ancestor_titles": ["AI 웨비나"]},
+            ),
+        )
+        db.expire_all()
+        chunk = db.scalar(select(Chunk).where(Chunk.document_id == document.id))
+
+        assert changed is False
+        assert chunk is not None
+        assert chunk.search_text == build_chunk_search_text(
+            "김그륜님의 바이브코딩",
+            {"ancestor_titles": ["AI 웨비나"]},
+            "에이전트 설계 실습 자료입니다.",
+        )

@@ -1,6 +1,6 @@
 from collections.abc import Generator
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 from app.config import get_settings
@@ -22,8 +22,34 @@ def init_db() -> None:
     from app import models  # noqa: F401
 
     Base.metadata.create_all(bind=engine)
+    chunk_columns = {column["name"] for column in inspect(engine).get_columns("chunks")}
+    if "search_text" not in chunk_columns:
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "ALTER TABLE chunks ADD COLUMN search_text "
+                    "TEXT NOT NULL DEFAULT ''"
+                )
+            )
     if settings.is_postgres:
         with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "UPDATE chunks AS chunk "
+                    "SET search_text = concat_ws(' ', document.title, "
+                    "document.metadata_json::text, chunk.text) "
+                    "FROM documents AS document "
+                    "WHERE document.id = chunk.document_id "
+                    "AND (chunk.search_text IS NULL OR chunk.search_text = '')"
+                )
+            )
+            connection.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_chunks_search_text_fts "
+                    "ON chunks USING gin "
+                    "(to_tsvector('simple', search_text))"
+                )
+            )
             connection.execute(
                 text(
                     "CREATE INDEX IF NOT EXISTS ix_chunks_embedding_hnsw "
@@ -41,6 +67,18 @@ def init_db() -> None:
                     "CREATE INDEX IF NOT EXISTS ix_documents_gmail_thread_id "
                     "ON documents ((metadata_json ->> 'thread_id')) "
                     "WHERE source_type = 'gmail'"
+                )
+            )
+    else:
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "UPDATE chunks SET search_text = "
+                    "COALESCE((SELECT document.title || ' ' || "
+                    "document.metadata_json || ' ' || chunks.text "
+                    "FROM documents AS document "
+                    "WHERE document.id = chunks.document_id), chunks.text) "
+                    "WHERE search_text IS NULL OR search_text = ''"
                 )
             )
 
