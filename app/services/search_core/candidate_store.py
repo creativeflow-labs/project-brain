@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from sqlalchemy import func, literal_column, select
+from sqlalchemy import Text, cast, func, literal_column, select
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
@@ -45,9 +45,13 @@ def _postgres_candidate_rows(
         for chunk, document in vector_rows:
             rows_by_chunk[chunk.id] = (chunk, document)
 
-    text_vector = func.to_tsvector(
-        literal_column("'simple'"), Chunk.search_text
+    searchable = func.concat_ws(
+        " ",
+        Document.title,
+        cast(Document.metadata_json, Text),
+        Chunk.text,
     )
+    text_vector = func.to_tsvector(literal_column("'simple'"), searchable)
     for query in plan.search_queries:
         terms = list(dict.fromkeys([*tokenize(query), *plan.entity_terms]))[:12]
         if not terms:

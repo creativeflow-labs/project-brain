@@ -78,7 +78,6 @@ class Chunk(Base):
     )
     position: Mapped[int] = mapped_column(Integer)
     text: Mapped[str] = mapped_column(Text)
-    search_text: Mapped[str] = mapped_column(Text, default="")
     locator: Mapped[str | None] = mapped_column(String(200), nullable=True)
     token_estimate: Mapped[int] = mapped_column(Integer, default=0)
     embedding: Mapped[list[float]] = mapped_column(EmbeddingColumn)
