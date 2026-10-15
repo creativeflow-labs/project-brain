@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 
-from sqlalchemy import Text, cast, func, literal_column, select
+from sqlalchemy import Text, cast, func, literal_column, select, union_all
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
@@ -42,6 +42,73 @@ def _load_all_project_rows(db: Session, project_id: str) -> list[CandidateRow]:
     )
 
 
+def _query_terms(plan: QueryPlan) -> list[list[str]]:
+    return [
+        terms for query in plan.search_queries
+        if (terms := list(dict.fromkeys([*tokenize(query), *plan.entity_terms]))[:12])
+    ]
+
+
+def _batched_postgres_lexical_rows(
+    db: Session, project_id: str, query_terms: list[list[str]],
+) -> list[CandidateRow]:
+    """Reuse the exact same FTS corpus within ONE request, never across requests.
+
+    Each query keeps its own top-k, tie-breaks and zero-result-only Korean
+    fallback. MATERIALIZED avoids rebuilding metadata/body vectors per query.
+    No persistent index, cache, schema or search-text changes are involved.
+    """
+    searchable = func.concat_ws(
+        " ", Document.title, cast(Document.metadata_json, Text), Chunk.text,
+    )
+    corpus = (
+        select(
+            Chunk.id.label("chunk_id"), Document.id.label("document_id"),
+            Chunk.position.label("position"),
+            func.to_tsvector(literal_column("'simple'"), searchable).label("vector"),
+        )
+        .join(Document, Chunk.document_id == Document.id)
+        .where(Chunk.project_id == project_id)
+        .cte("lexical_corpus")
+        .prefix_with("MATERIALIZED", dialect="postgresql")
+    )
+
+    def ranked(query):
+        return (
+            select(corpus.c.chunk_id)
+            .where(corpus.c.vector.op("@@")(query))
+            .order_by(
+                func.ts_rank_cd(corpus.c.vector, query).desc(),
+                corpus.c.document_id, corpus.c.position, corpus.c.chunk_id,
+            )
+            .limit(settings.search_candidate_limit)
+        )
+
+    selections = []
+    for index, terms in enumerate(query_terms):
+        web_query = " OR ".join(f'"{term.replace(chr(34), "")}"' for term in terms)
+        primary = ranked(func.websearch_to_tsquery(
+            literal_column("'simple'"), web_query,
+        )).cte(f"lexical_primary_{index}")
+        selections.append(select(primary.c.chunk_id))
+        prefix_query = _korean_prefix_query(terms)
+        if prefix_query is not None:
+            fallback = (
+                ranked(prefix_query)
+                .where(~select(primary.c.chunk_id).exists())
+                .cte(f"lexical_fallback_{index}")
+            )
+            selections.append(select(fallback.c.chunk_id))
+    matches = union_all(*selections).subquery("lexical_matches")
+    return list(db.execute(
+        select(Chunk, Document)
+        .join(Document, Chunk.document_id == Document.id)
+        .where(Chunk.project_id == project_id,
+               Chunk.id.in_(select(matches.c.chunk_id)))
+        .order_by(Document.id, Chunk.position, Chunk.id)
+    ).all())
+
+
 def _postgres_candidate_rows(
     db: Session,
     project_id: str,
@@ -62,6 +129,13 @@ def _postgres_candidate_rows(
         ).all()
         for chunk, document in vector_rows:
             rows_by_chunk[chunk.id] = (chunk, document)
+
+    query_terms = _query_terms(plan)
+    if len(query_terms) > 1:
+        for chunk, document in _batched_postgres_lexical_rows(db, project_id, query_terms):
+            rows_by_chunk[chunk.id] = (chunk, document)
+        return sorted(rows_by_chunk.values(),
+                      key=lambda row: (row[1].id, row[0].position, row[0].id))
 
     searchable = func.concat_ws(
         " ",

@@ -485,7 +485,9 @@ def _llm_assessment(
                 "작업은 가능한 범위에서 계속 수행하고, 확인되지 않은 값은 자리표시자로 둔다. insufficient이면 "
                 "현재 검색에서 찾지 못한 것과 실제로 존재하지 않는 것을 구분한다. 답변의 핵심 주장 뒤에는 "
                 "입력 배열 순서에 따른 [1] 형식의 인용을 붙인다. 충돌·부족 시에만 필요한 추가 확인을 "
-                "next_action과 retry_queries에 제안한다."
+                "next_action과 retry_queries에 제안한다. 영상 개수 질문에서 "
+                "collection_match_count가 null이면 근거 문서 개수를 전체 영상 개수로 단정하지 않는다. "
+                "확인한 사례 수와 전체 집계 가능 여부를 구분한다."
             ),
             input=json.dumps(
                 {
@@ -496,6 +498,7 @@ def _llm_assessment(
                     "requested_field": plan.requested_field,
                     "requested_fields": plan.requested_fields,
                     "cardinality": plan.cardinality,
+                    "collection_match_count": plan.collection_match_count,
                     "time_range": (
                         {
                             "start": plan.time_start.isoformat(),

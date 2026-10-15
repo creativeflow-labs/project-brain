@@ -56,6 +56,9 @@ class QueryPlan:
     task_mode: TaskMode = "answer"
     scope_mode: ScopeMode = "open"
     locked_entity_terms: list[str] = field(default_factory=list)
+    collection_title_terms: list[str] = field(default_factory=list)
+    collection_filters_supported: bool = False
+    collection_match_count: int | None = None
 
 
 @dataclass

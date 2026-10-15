@@ -11,6 +11,7 @@ from app.config import get_settings
 from app.models import ConversationMessage
 from app.services.openai_client import get_openai_client
 from app.services.search_core.conversation import assistant_identity_answer
+from app.services.search_core.collection_contract import video_operation
 from app.services.search_core.types import QueryPlan
 
 settings = get_settings()
@@ -380,6 +381,19 @@ def _apply_request_contract(
     )
 
 
+def _plain_dated_video_list(question: str) -> bool:
+    """Keep the established plain monthly-list fast path, not topic filters."""
+    allowed = {"크랩", "유튜브", "youtube", "crab", "영상", "영상의", "제목", "제목을", "제목과",
+               "업로드", "시간", "시간을", "포함", "포함해서", "리스트", "리스트로",
+               "목록", "목록을", "전체", "전부", "모두", "제시해줘", "알려줘", "채널", "함께",
+               "채널의", "올해", "작년", "년", "월", "해당", "그럼", "몇", "개야",
+               "개", "편", "편이야", "개수", "개수는", "몇편", "몇개", "영상은",
+               "월에", "발행된", "시간과"}
+    return video_operation(question) in {"list", "count"} and all(
+        term in allowed for term in _keywords(question)
+    )
+
+
 def _can_use_deterministic_plan(question: str) -> bool:
     task_mode = _task_mode(question)
     explicit_entities = _explicit_entity_terms(question)
@@ -401,6 +415,7 @@ def _can_use_deterministic_plan(question: str) -> bool:
         time_start is not None
         and _cardinality(question, time_start) == "all"
         and _record_type(question) is not None
+        and _plain_dated_video_list(question)
     )
 
 
@@ -498,6 +513,10 @@ def _fallback_plan(
         is_state_query=_is_state_query(question),
         retrieval_mode=_retrieval_mode(cardinality, record_type),
         record_type=record_type,
+        collection_filters_supported=(
+            record_type == "video" and time_start is not None
+            and _plain_dated_video_list(resolved.replace(" / 후속 질문: ", " "))
+        ),
     )
 
 
@@ -556,6 +575,10 @@ def _llm_plan(
                 ],
             },
             "is_state_query": {"type": "boolean"},
+            "collection_title_terms": {
+                "type": "array", "items": {"type": "string"}, "maxItems": 5,
+            },
+            "collection_filters_supported": {"type": "boolean"},
         },
         "required": [
             "resolved_question",
@@ -568,6 +591,8 @@ def _llm_plan(
             "time_end",
             "time_field",
             "is_state_query",
+            "collection_title_terms",
+            "collection_filters_supported",
         ],
         "additionalProperties": False,
     }
@@ -586,6 +611,12 @@ def _llm_plan(
                 "목록인지 보존한다. is_state_query는 현재 진행 상태나 현재 단계를 직접 묻는 경우에만 "
                 "참으로 지정하고, 거절 이유·원인·설명 질문에는 거짓으로 지정한다. 기록에 없는 사실은 "
                 "추가하지 않는다."
+                " 영상 개수·목록 질문의 collection_title_terms에는 제목에 반드시 포함되어야 하는 "
+                "명시적인 분류·주제만 넣는다(예: 실전편). 채널명, 영상, 날짜는 넣지 않는다. "
+                "모든 조건을 제목 부분문자열 AND와 기간으로 정확히 적용할 수 있을 때만 "
+                "collection_filters_supported=true로 한다. 내용의 의미 분석, 공개 완료 여부, "
+                "동의어 OR 조건이 필요하면 false로 한다. 내용 설명 질문도 false다. "
+                "현재 질문에 없는 이전 질문의 분류·개수·목록 요구를 계승하지 않는다."
             ),
             input=json.dumps(
                 {
@@ -654,6 +685,12 @@ def _llm_plan(
             is_state_query=bool(payload["is_state_query"] and not has_cause_marker),
             retrieval_mode=_retrieval_mode(final_cardinality, record_type),
             record_type=record_type,
+            collection_title_terms=[
+                term.strip() for term in payload.get("collection_title_terms", []) if term.strip()
+            ],
+            collection_filters_supported=bool(
+                payload.get("collection_filters_supported", False)
+            ),
         )
     except Exception:
         return None
@@ -669,4 +706,15 @@ def plan_queries(
         plan = _fallback_plan(question, history)
     else:
         plan = _llm_plan(question, history) or _fallback_plan(question, history)
-    return _apply_request_contract(plan, question, history)
+    plan = _apply_request_contract(plan, question, history)
+    if plan.record_type == "video":
+        operation = video_operation(question)
+        if operation == "describe" or not plan.collection_filters_supported:
+            # Multiple relevant records do not imply an unfiltered full-list answer.
+            plan = replace(
+                plan, retrieval_mode="hybrid",
+                cardinality="many" if plan.cardinality == "all" else plan.cardinality,
+            )
+        elif operation in {"count", "list"}:
+            plan = replace(plan, retrieval_mode="scoped", cardinality="all")
+    return plan

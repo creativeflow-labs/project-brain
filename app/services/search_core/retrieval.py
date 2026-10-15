@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 from app.config import get_settings
 from app.models import Chunk, Document
 from app.services.embeddings import embedding_service
-from app.services.record_metadata import infer_record_type
+from app.services.record_metadata import infer_record_type, extract_record_title
 from app.services.search_core.candidate_store import load_candidate_rows
 from app.services.search_core.scoring import (
     BM25Corpus,
@@ -274,6 +274,24 @@ def retrieve_candidates(
             for chunk, document in rows
             if _row_matches_time_range(chunk, document, plan)
         ]
+    if plan.retrieval_mode == "scoped":
+        # Apply constraints before ranking/limits; scores alone are not filters.
+        if plan.collection_title_terms:
+            document_text: defaultdict[str, list[str]] = defaultdict(list)
+            documents: dict[str, Document] = {}
+            for chunk, document in rows:
+                document_text[document.id].append(chunk.text)
+                documents[document.id] = document
+            matching_ids = set()
+            for document_id, document in documents.items():
+                title = extract_record_title(
+                    document.title, "\n".join(document_text[document_id]),
+                    document.metadata_json or {},
+                ).casefold()
+                if all(term.casefold() in title for term in plan.collection_title_terms):
+                    matching_ids.add(document_id)
+            rows = [(chunk, document) for chunk, document in rows if document.id in matching_ids]
+        plan.collection_match_count = len({document.id for _, document in rows})
     if not rows:
         return []
 

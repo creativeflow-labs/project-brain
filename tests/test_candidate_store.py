@@ -62,3 +62,24 @@ def test_latin_lookup_keeps_original_lexical_query_shape():
     sql = str(statements[0].compile(dialect=postgresql.dialect()))
     assert " to_tsquery(" not in sql
     assert "CASE WHEN" not in sql
+
+
+def test_multiple_queries_share_one_request_local_fts_corpus():
+    statements = []
+    db = SimpleNamespace(execute=lambda statement: (
+        statements.append(statement) or SimpleNamespace(all=lambda: [])
+    ))
+    plan = QueryPlan(original_question="웨비나", resolved_question="웨비나",
+                     search_queries=["웨비나", "바이브코딩", "KDP"])
+    _postgres_candidate_rows(db, "only-this-project", plan, [])
+    assert len(statements) == 1
+    compiled = statements[0].compile(dialect=postgresql.dialect())
+    sql = str(compiled)
+    assert "lexical_corpus AS MATERIALIZED" in sql
+    assert sql.count("to_tsvector(") == 1
+    assert "lexical_primary_0" in sql and "lexical_primary_2" in sql
+    assert "lexical_fallback_0" in sql and "lexical_fallback_1" in sql
+    assert "lexical_fallback_2" not in sql
+    assert sql.count("NOT (EXISTS") == 2
+    assert "only-this-project" in compiled.params.values()
+    assert sql.count("chunks.project_id =") == 2

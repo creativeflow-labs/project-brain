@@ -13,6 +13,7 @@ from app.services.search_core.types import (
     EvidencePacket,
     QueryPlan,
 )
+from app.services.search_core.collection_contract import video_operation
 
 
 def assess_scoped_collection(
@@ -24,6 +25,31 @@ def assess_scoped_collection(
         or plan.record_type != "video"
     ):
         return None
+    operation = video_operation(plan.original_question)
+    if operation not in {"count", "list"}:
+        return None
+    if operation == "count":
+        # This count was taken over matching documents BEFORE evidence limits.
+        if plan.collection_match_count is None:
+            return None
+        count = plan.collection_match_count
+        references = list(range(1, min(len(packets), 3) + 1))
+        citations = "".join(f" [{index}]" for index in references)
+        body = f"현재 동기화된 Notion 영상 기록 중 질문 조건에 맞는 기록은 총 {count}건입니다.{citations}"
+        if plan.collection_title_terms:
+            body += "\n\n제목 포함 조건: " + ", ".join(plan.collection_title_terms)
+        body += "\n\n동기화된 기록 기준이며, 실제 YouTube 공개 완료 여부는 별도 확인이 필요합니다."
+        return EvidenceAssessment(
+            status="supported",
+            answer=body,
+            cited_document_ids=[packet.document.id for packet in packets[:3]],
+            report=AnswerReport(
+                answer_type="direct",
+                status="supported",
+                headline=f"질문 조건에 맞는 영상 기록 {count}건을 확인했습니다.",
+                body=body,
+            ),
+        )
     positions = {
         packet.document.id: index for index, packet in enumerate(packets, start=1)
     }
@@ -71,6 +97,15 @@ def assess_scoped_collection(
         ]
     )
     body = "\n".join(lines)
+    if plan.collection_match_count is not None and plan.collection_match_count > len(records):
+        body = body.replace(
+            f"영상 기록은 총 {len(records)}건입니다.",
+            f"영상 기록 중 아래 {len(records)}건을 표시합니다.", 1,
+        )
+        body += (
+            f"\n\n조건에 맞는 동기화 기록은 {plan.collection_match_count}건입니다. "
+            "표시 제한 또는 업로드 시각 미기재로 일부 기록이 목록에서 생략되었습니다."
+        )
     document_ids = [packet.document.id for _, _, packet in records]
     return EvidenceAssessment(
         status="supported",
@@ -79,7 +114,7 @@ def assess_scoped_collection(
         report=AnswerReport(
             answer_type="direct",
             status="supported",
-            headline=f"해당 기간의 영상 기록 {len(records)}건을 확인했습니다.",
+            headline=f"영상 기록 {len(records)}건을 표시합니다.",
             body=body,
         ),
     )

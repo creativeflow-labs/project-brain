@@ -202,6 +202,9 @@ def answer_question(
             "locked_entity_terms": plan.locked_entity_terms,
             "retrieval_mode": plan.retrieval_mode,
             "record_type": plan.record_type,
+            "collection_title_terms": plan.collection_title_terms,
+            "collection_filters_supported": plan.collection_filters_supported,
+            "collection_match_count": plan.collection_match_count,
             "candidate_count": result.get("candidate_count", 0),
             "evidence_document_ids": [
                 packet.document.id for packet in packets
