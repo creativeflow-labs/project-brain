@@ -14,6 +14,7 @@ from app.models import (
     utcnow,
 )
 from app.schemas import AnswerViewOut, AskResponse, Citation, CurrentStateOut
+from app.version import APP_VERSION
 from app.services.search_core.reporting import (
     answer_report_to_dict,
     render_answer_text,
@@ -180,7 +181,7 @@ def answer_question(
         project_id=project_id,
         status=assessment.status,
         trace_json={
-            "search_core_version": "0.3.0",
+            "search_core_version": APP_VERSION,
             "search_queries": plan.search_queries,
             "entity_terms": plan.entity_terms,
             "requested_field": plan.requested_field,

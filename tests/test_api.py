@@ -107,6 +107,25 @@ def test_project_scope_isolation():
         assert response["citations"] == []
 
 
+def test_assistant_identity_uses_no_private_project_citations():
+    with TestClient(app) as client:
+        project_id = client.post("/api/projects", json={"name": "제품 정보 구분"}).json()["id"]
+        result = client.post("/api/ask", json={
+            "project_id": project_id, "question": "안녕, 너 이름이 뭐니?",
+        })
+        assert result.status_code == 200
+        payload = result.json()
+        assert payload["mode"] == "assistant_info"
+        assert payload["evidence_status"] == "supported"
+        assert payload["citations"] == []
+        assert "피비(PB)" in payload["answer"]
+        with SessionLocal() as db:
+            trace = db.get(SearchTrace, payload["trace_id"])
+            assert trace.trace_json["search_queries"] == []
+            assert trace.trace_json["candidate_count"] == 0
+            assert trace.trace_json["search_core_version"] == APP_VERSION
+
+
 def test_follow_up_restores_subject_and_compares_cross_source_evidence():
     with TestClient(app) as client:
         project = client.post(
