@@ -10,6 +10,7 @@ from zoneinfo import ZoneInfo
 from app.config import get_settings
 from app.models import ConversationMessage
 from app.services.openai_client import get_openai_client
+from app.services.search_core.conversation import assistant_identity_answer
 from app.services.search_core.types import QueryPlan
 
 settings = get_settings()
@@ -661,6 +662,9 @@ def _llm_plan(
 def plan_queries(
     question: str, history: list[ConversationMessage]
 ) -> QueryPlan:
+    if assistant_identity_answer(question):
+        return QueryPlan(original_question=question.strip(),
+                         resolved_question=question.strip(), search_queries=[])
     if _can_use_deterministic_plan(question):
         plan = _fallback_plan(question, history)
     else:

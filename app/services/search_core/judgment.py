@@ -5,6 +5,7 @@ import re
 
 from app.config import get_settings
 from app.services.openai_client import get_openai_client
+from app.services.search_core.conversation import assistant_identity_answer
 from app.services.search_core.types import (
     AnswerFact,
     AnswerReport,
@@ -602,6 +603,13 @@ def assess_evidence(
     packets: list[EvidencePacket],
     current_state: CurrentStateAssessment | None = None,
 ) -> EvidenceAssessment:
+    identity = assistant_identity_answer(plan.original_question)
+    if identity:
+        return EvidenceAssessment(
+            status="supported", answer=identity, cited_document_ids=[],
+            report=AnswerReport(answer_type="direct", status="supported",
+                                headline="피비(PB)를 소개합니다.", body=identity),
+        )
     # 상태 질문은 규칙 엔진이 계산한 정규 상태를 그대로 답변 계약으로 사용합니다.
     # 자유 생성 답변이 판정 결과와 반대되는 상태명을 다시 만드는 것을 막기 위한
     # v0.4 알파의 안전 경계이며, 설명 생성은 이후 검증기를 통과한 경우에만 허용합니다.

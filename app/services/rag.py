@@ -20,6 +20,7 @@ from app.services.search_core.reporting import (
     report_document_ids,
     validate_answer_report,
 )
+from app.services.search_core.conversation import assistant_identity_answer
 from app.services.search_core.state_engine import current_state_to_dict
 from app.services.search_core.types import EvidencePacket
 from app.services.search_core.workflow import search_graph
@@ -165,7 +166,9 @@ def answer_question(
     answer_report_payload["body"] = answer
     citation_snapshot = [citation.model_dump(mode="json") for citation in citations]
 
-    if not packets:
+    if assistant_identity_answer(question):
+        mode = "assistant_info"
+    elif not packets:
         mode = "no_evidence"
     elif settings.openai_api_key:
         mode = "generative"
