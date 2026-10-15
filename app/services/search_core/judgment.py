@@ -74,7 +74,14 @@ def _contact_role(packet: EvidencePacket, text: str) -> str:
 
 def _money_role(packet: EvidencePacket, text: str) -> str:
     lowered = text.lower()
-    if any(value in lowered for value in ("최종 금액", "확정 금액", "수락", "승인")):
+    approval_is_uncertain = re.search(
+        r"(?:수락|승인|확정)[^\n.!?]{0,18}(?:않|없|미정|대기|필요|못|예정|요청)"
+        r"|미(?:확정|승인|수락)",
+        lowered,
+    )
+    if not approval_is_uncertain and any(
+        value in lowered for value in ("최종 금액", "확정 금액", "수락", "승인")
+    ):
         return "최종 승인 금액"
     if any(
         value in lowered
@@ -293,7 +300,13 @@ def _fallback_assessment(
     if values_by_document:
         rendered = ", ".join(sorted(all_values))
         for fact in report_facts:
-            fact.fact_status = "confirmed"
+            # Regex extraction confirms a record, not a commercial agreement.
+            fact.fact_status = (
+                "proposed" if plan.requested_field == "money"
+                and fact.role in {"우리 측 견적", "상대방 제안 금액"}
+                else "recorded" if plan.requested_field == "money"
+                else "confirmed"
+            )
         role_count = len({fact.role for fact in report_facts})
         headline = (
             "담당자 정보를 역할별로 확인했습니다."
@@ -302,9 +315,16 @@ def _fallback_assessment(
             if plan.requested_field == "money" and role_count > 1
             else _report_headline(plan, "supported", rendered)
         )
+        body = f"프로젝트 근거에서 확인된 값은 {rendered}입니다."
+        if plan.requested_field == "money":
+            headline = "원문에 기록된 금액을 확인했습니다."
+            body = (
+                f"원문에 기록된 금액은 {rendered}입니다. "
+                "이 추출 결과만으로 상대방의 수락이나 최종 합의를 확정할 수는 없습니다."
+            )
         return EvidenceAssessment(
             status="supported",
-            answer=f"프로젝트 근거에서 확인된 값은 {rendered}입니다.",
+            answer=body,
             cited_document_ids=[
                 packet.document.id for packet, _ in values_by_document
             ],
@@ -312,7 +332,7 @@ def _fallback_assessment(
                 answer_type="direct",
                 status="supported",
                 headline=headline,
-                body=f"프로젝트 근거에서 확인된 값은 {rendered}입니다.",
+                body=body,
                 facts=report_facts,
             ),
         )

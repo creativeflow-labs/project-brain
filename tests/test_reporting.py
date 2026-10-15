@@ -80,6 +80,27 @@ def test_different_contact_roles_are_not_false_conflict():
     }
 
 
+def test_extractive_money_quote_is_not_a_confirmed_agreement():
+    plan = QueryPlan(original_question="협업비는?", resolved_question="협업비는?",
+                     search_queries=["협업비"], requested_field="money")
+    packet = _packet(_document("quote", "gmail", "회신 견적"),
+                     "저희 견적은 200만원입니다. 상대방의 수락은 아직 없습니다.")
+    assessment = assess_evidence(plan, [packet])
+    fact = assessment.report.facts[0]
+    assert fact.role == "우리 측 견적"
+    assert fact.fact_status == "proposed"
+    assert "확정할 수는 없습니다" in assessment.answer
+
+
+def test_extractive_money_record_is_recorded_even_if_it_mentions_approval():
+    plan = QueryPlan(original_question="금액?", resolved_question="금액?",
+                     search_queries=["금액"], requested_field="money")
+    packet = _packet(_document("amount", "notion", "금액 기록"),
+                     "최종 금액: 200만원, 승인 완료로 기재")
+    assessment = assess_evidence(plan, [packet])
+    assert assessment.report.facts[0].fact_status == "recorded"
+
+
 def test_report_validator_removes_markdown_and_blocks_decisive_conflict_headline():
     document = _document("conflict-source", "notion", "충돌 근거")
     packet = _packet(document, "담당자: Brown")
