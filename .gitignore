@@ -24,6 +24,7 @@ data/secrets/*
 !data/secrets/.gitkeep
 data/browser_uploads/
 data/test_uploads/
+data/accuracy-review/
 
 # 외부 서비스 인증 파일
 client_secret*.json

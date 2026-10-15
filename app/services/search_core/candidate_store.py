@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from sqlalchemy import Text, cast, func, literal_column, select
+import re
+
+from sqlalchemy import Text, case, cast, func, literal_column, select
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
@@ -11,6 +13,22 @@ from app.services.search_core.types import QueryPlan
 
 settings = get_settings()
 CandidateRow = tuple[Chunk, Document]
+
+
+def _korean_prefix_query(terms: list[str]):
+    """Supplement simple FTS for Korean particles; never prefix Latin IDs.
+
+    Keep the original exact lexical pool first. Prefix matches only fill unused
+    slots, so existing exact candidates and their tie order are not displaced.
+    Only complete Hangul terms are allowed in the tsquery expression.
+    """
+    korean_terms = list(dict.fromkeys(
+        term for term in terms if re.fullmatch(r"[가-힣]{2,}", term)
+    ))
+    if not korean_terms:
+        return None
+    expression = " | ".join(f"'{term}':*" for term in korean_terms)
+    return func.to_tsquery(literal_column("'simple'"), expression)
 
 
 def _load_all_project_rows(db: Session, project_id: str) -> list[CandidateRow]:
@@ -61,14 +79,26 @@ def _postgres_candidate_rows(
             literal_column("'simple'"), web_query
         )
         rank = func.ts_rank_cd(text_vector, text_query)
+        exact_match = text_vector.op("@@")(text_query)
+        prefix_query = _korean_prefix_query(terms)
+        matches = exact_match
+        ordering = [rank.desc(), Document.id, Chunk.position, Chunk.id]
+        if prefix_query is not None:
+            matches = exact_match | text_vector.op("@@")(prefix_query)
+            supplemental_rank = case(
+                (exact_match, 0.0),
+                else_=func.ts_rank_cd(text_vector, prefix_query),
+            )
+            ordering = [exact_match.desc(), rank.desc(), supplemental_rank.desc(),
+                        Document.id, Chunk.position, Chunk.id]
         lexical_rows = db.execute(
             select(Chunk, Document)
             .join(Document, Chunk.document_id == Document.id)
             .where(
                 Chunk.project_id == project_id,
-                text_vector.op("@@")(text_query),
+                matches,
             )
-            .order_by(rank.desc(), Document.id, Chunk.position, Chunk.id)
+            .order_by(*ordering)
             .limit(limit)
         ).all()
         for chunk, document in lexical_rows:
