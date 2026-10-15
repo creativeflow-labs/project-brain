@@ -101,6 +101,16 @@ def test_extractive_money_record_is_recorded_even_if_it_mentions_approval():
     assert assessment.report.facts[0].fact_status == "recorded"
 
 
+def test_missing_price_is_not_labeled_as_a_proposed_price():
+    plan = QueryPlan(original_question="협업비는?", resolved_question="협업비는?",
+                     search_queries=["협업비"], requested_field="money")
+    packet = _packet(_document("no-price", "gmail", "협업 제안"),
+                     "협업 제안입니다. 금액은 제안하지 않았습니다.")
+    assessment = assess_evidence(plan, [packet])
+    assert assessment.report.facts[0].value == "미제안"
+    assert assessment.report.facts[0].fact_status == "recorded"
+
+
 def test_report_validator_removes_markdown_and_blocks_decisive_conflict_headline():
     document = _document("conflict-source", "notion", "충돌 근거")
     packet = _packet(document, "담당자: Brown")

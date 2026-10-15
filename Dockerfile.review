@@ -1,0 +1,10 @@
+# Local review only: preserve the saved runtime and installed dependencies.
+# This is not the portable release Dockerfile. Save the base image first.
+ARG PB_BASE_IMAGE=project-brain-mvp-app:before-accuracy-20261016
+FROM ${PB_BASE_IMAGE}
+WORKDIR /app
+COPY app ./app
+COPY tests ./tests
+COPY scripts ./scripts
+COPY docs ./docs
+COPY CHANGELOG.md README.md ./

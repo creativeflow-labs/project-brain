@@ -305,6 +305,7 @@ def _fallback_assessment(
             fact.fact_status = (
                 "proposed" if plan.requested_field == "money"
                 and fact.role in {"우리 측 견적", "상대방 제안 금액"}
+                and fact.value != "미제안"
                 else "recorded" if plan.requested_field == "money"
                 else "confirmed"
             )
