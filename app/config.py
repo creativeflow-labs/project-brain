@@ -24,6 +24,7 @@ class Settings(BaseSettings):
     search_total_evidence_max_chars: int = 80000
     search_history_messages: int = 8
     search_max_retries: int = 1
+    search_embedding_prefetch: bool = False
 
     notion_version: str = "2026-03-11"
     notion_max_pages_per_sync: int = 2000

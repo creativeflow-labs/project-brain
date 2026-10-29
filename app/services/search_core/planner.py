@@ -696,6 +696,17 @@ def _llm_plan(
         return None
 
 
+def can_prefetch_embedding(question: str) -> bool:
+    """Use the existing route rules; leave fast and context-dependent routes alone."""
+    return bool(
+        question.strip()
+        and not assistant_identity_answer(question)
+        and not _is_follow_up(question)
+        and not _can_use_deterministic_plan(question)
+        and _task_mode(question) == "answer"
+    )
+
+
 def plan_queries(
     question: str, history: list[ConversationMessage]
 ) -> QueryPlan:

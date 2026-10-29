@@ -260,11 +260,15 @@ def _row_matches_time_range(chunk: Chunk, document: Document, plan: QueryPlan) -
 
 
 def retrieve_candidates(
-    db: Session, project_id: str, plan: QueryPlan
+    db: Session, project_id: str, plan: QueryPlan,
+    *, prepared_embeddings: dict[str, list[float]] | None = None,
 ) -> list[SearchCandidate]:
     if not plan.search_queries:
         return []
-    embeddings = embedding_service.embed_queries(plan.search_queries)
+    embeddings = (
+        embedding_service.embed_queries(plan.search_queries, prepared=prepared_embeddings)
+        if prepared_embeddings else embedding_service.embed_queries(plan.search_queries)
+    )
     rows = load_candidate_rows(db, project_id, plan, embeddings)
     scoped_ids = _scoped_document_ids(rows, plan)
     rows = [(chunk, document) for chunk, document in rows if document.id in scoped_ids]

@@ -270,12 +270,26 @@ async function askQuestion(event) {
   const input = $("#question");
   const question = input.value.trim();
   if (!question) return;
+  const startedAt = performance.now();
   renderMessage("user", question);
   input.value = "";
   const button = $("#ask-form button");
   button.disabled = true;
   button.textContent = "근거 검색 중…";
   const pending = renderMessage("assistant", "프로젝트 자료에서 근거를 찾고 있습니다.");
+  const elapsed = document.createElement("div");
+  elapsed.className = "response-time";
+  elapsed.setAttribute("role", "timer");
+  elapsed.setAttribute("aria-live", "off");
+  pending.querySelector(".message-label").after(elapsed);
+  const showElapsed = label => {
+    const milliseconds = performance.now() - startedAt;
+    elapsed.textContent = `${label} · ${(milliseconds / 1000).toFixed(1)}초`;
+    elapsed.dataset.elapsedMs = String(Math.round(milliseconds));
+  };
+  showElapsed("응답 준비 중");
+  const elapsedTimer = setInterval(() => showElapsed("응답 준비 중"), 100);
+  let completed = false;
   try {
     const result = await api("/api/ask", {
       method: "POST", headers: { "Content-Type": "application/json" },
@@ -292,10 +306,23 @@ async function askQuestion(event) {
     if (result.answer_view) renderAnswerView(bubble, result.answer_view, result.citations, result.answer_id);
     else bubble.textContent = result.answer;
     activateAnswerEvidence(result.answer_id);
+    // Give the browser an opportunity to paint the completed answer.
+    await new Promise(resolve => {
+      const fallback = setTimeout(resolve, 100);
+      requestAnimationFrame(() => requestAnimationFrame(() => {
+        clearTimeout(fallback);
+        resolve();
+      }));
+    });
+    completed = true;
   } catch (error) {
     pending.querySelector(".bubble").textContent = `오류: ${error.message}`;
     toast(error.message, true);
   } finally {
+    clearInterval(elapsedTimer);
+    showElapsed(completed ? "응답 완료" : "응답 실패");
+    elapsed.setAttribute("role", "status");
+    elapsed.setAttribute("aria-live", "polite");
     button.disabled = false;
     button.innerHTML = `질문하기 <span>↑</span>`;
   }

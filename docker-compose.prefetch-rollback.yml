@@ -1,0 +1,5 @@
+services:
+  app:
+    image: project-brain-mvp-app:before-embedding-prefetch-20261030
+    environment:
+      SEARCH_EMBEDDING_PREFETCH: "false"

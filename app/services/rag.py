@@ -213,6 +213,10 @@ def answer_question(
             "judgment_document_ids": assessment.cited_document_ids,
             "retry_count": result.get("retry_count", 0),
             "timings_ms": result.get("timings_ms", {}),
+            "embedding_prefetch": {
+                "enabled": settings.search_embedding_prefetch,
+                "prepared_query_count": len(result.get("prepared_embeddings", {})),
+            },
             "current_state": current_state_payload,
             "answer_view": answer_report_payload,
             "citation_snapshot": citation_snapshot,

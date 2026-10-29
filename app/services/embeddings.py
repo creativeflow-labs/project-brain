@@ -34,7 +34,24 @@ class EmbeddingService:
     def embed_one(self, text: str) -> list[float]:
         return self.embed_many([text])[0]
 
-    def embed_queries(self, texts: list[str]) -> list[list[float]]:
+    def prefetch_query(self, text: str) -> list[float]:
+        """Bounded speculative work; do not cache until a plan actually uses it."""
+        with self._query_cache_lock:
+            cached = self._query_cache.get(text)
+            if cached is not None:
+                return list(cached)
+        if not self.client:
+            return self._local_embedding(text)
+        response = self.client.with_options(timeout=3.0, max_retries=0).embeddings.create(
+            model=settings.openai_embedding_model,
+            input=[text],
+            dimensions=settings.embedding_dimensions,
+        )
+        return response.data[0].embedding
+
+    def embed_queries(
+        self, texts: list[str], *, prepared: dict[str, list[float]] | None = None
+    ) -> list[list[float]]:
         if not texts:
             return []
 
@@ -43,11 +60,20 @@ class EmbeddingService:
         with self._query_cache_lock:
             for text in dict.fromkeys(texts):
                 vector = self._query_cache.get(text)
+                if vector is None and prepared and text in prepared:
+                    candidate = prepared[text]
+                    if len(candidate) == settings.embedding_dimensions and all(
+                        math.isfinite(value) for value in candidate
+                    ):
+                        vector = tuple(candidate)
+                        self._query_cache[text] = vector
                 if vector is None:
                     missing.append(text)
                     continue
                 self._query_cache.move_to_end(text)
                 cached[text] = list(vector)
+            while len(self._query_cache) > self._query_cache_size:
+                self._query_cache.popitem(last=False)
 
         if missing:
             embedded = self.embed_many(missing)

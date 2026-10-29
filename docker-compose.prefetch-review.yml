@@ -1,0 +1,7 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile.prefetch-review
+    environment:
+      SEARCH_EMBEDDING_PREFETCH: "${SEARCH_EMBEDDING_PREFETCH:-false}"

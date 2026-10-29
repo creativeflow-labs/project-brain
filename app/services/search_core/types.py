@@ -157,3 +157,4 @@ class SearchState(TypedDict, total=False):
     retry_count: int
     candidate_count: int
     timings_ms: dict[str, float]
+    prepared_embeddings: dict[str, list[float]]

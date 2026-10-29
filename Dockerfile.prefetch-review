@@ -1,0 +1,3 @@
+# Preserve the known-good runtime/dependencies; update application code only.
+FROM project-brain-mvp-app:before-embedding-prefetch-20261030
+COPY app /app/app

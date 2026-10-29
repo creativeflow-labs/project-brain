@@ -7,7 +7,10 @@ from langgraph.graph import END, START, StateGraph
 from app.config import get_settings
 from app.services.search_core.collection import assess_scoped_collection
 from app.services.search_core.judgment import assess_evidence
-from app.services.search_core.planner import extend_plan_for_retry, plan_queries
+from app.services.search_core.planner import (
+    can_prefetch_embedding, extend_plan_for_retry, plan_queries,
+)
+from app.services.search_core.prefetch import start_prefetch, take_ready
 from app.services.search_core.retrieval import (
     build_evidence_packets,
     retrieve_candidates,
@@ -29,16 +32,33 @@ def _updated_timings(
 
 def _plan_node(state: SearchState) -> dict:
     started_at = perf_counter()
-    plan = plan_queries(state["question"], state["history"])
+    question = state["question"].strip()
+    future = None
+    if settings.search_embedding_prefetch and can_prefetch_embedding(question):
+        future = start_prefetch(question)
+    try:
+        plan = plan_queries(state["question"], state["history"])
+    except BaseException:
+        if future is not None:
+            future.cancel()
+        raise
+    prepared = take_ready(future, question, plan.search_queries)
     return {
         "plan": plan,
+        "prepared_embeddings": prepared,
         "timings_ms": _updated_timings(state, "plan", started_at),
     }
 
 
 def _retrieve_node(state: SearchState) -> dict:
     retrieve_started_at = perf_counter()
-    candidates = retrieve_candidates(state["db"], state["project_id"], state["plan"])
+    prepared = state.get("prepared_embeddings")
+    if prepared:
+        candidates = retrieve_candidates(
+            state["db"], state["project_id"], state["plan"], prepared_embeddings=prepared
+        )
+    else:
+        candidates = retrieve_candidates(state["db"], state["project_id"], state["plan"])
     timings = _updated_timings(state, "retrieve_candidates", retrieve_started_at)
     evidence_started_at = perf_counter()
     packets = build_evidence_packets(
