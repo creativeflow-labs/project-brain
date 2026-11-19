@@ -1,11 +1,18 @@
+import json
+from types import SimpleNamespace
+
+import pytest
+
 from app.models import Document
+from app.services.search_core import judgment, planner
 from app.services.search_core.judgment import assess_evidence
-from app.services.search_core.reporting import validate_answer_report
+from app.services.search_core.reporting import render_answer_text, validate_answer_report
 from app.services.search_core.types import (
     AnswerFact,
     AnswerReport,
     CurrentStateAssessment,
     EvidenceAssessment,
+    EvidenceNote,
     EvidencePacket,
     QueryPlan,
 )
@@ -30,6 +37,141 @@ def _packet(document: Document, text: str) -> EvidencePacket:
         context_text=text,
         score=0.9,
     )
+
+
+def test_material_note_from_assessment_is_rendered_in_normal_answer(monkeypatch):
+    question = "검수가 왜 지연됐어?"
+    plan = QueryPlan(question, question, [question], requested_fields=["reason"])
+    packets = [
+        _packet(_document("inspection", "notion", "점검 기록"), "검수 장비가 도착하지 않았다."),
+        _packet(_document("handover", "naverworks", "인수인계 메모"), "교대 인력도 부족했다."),
+    ]
+    payload = {
+        "status": "supported", "answer": "검수 장비 입고가 늦었습니다. [1]",
+        "headline": "검수 지연 사유", "detail": None, "facts": [],
+        "evidence_note": {"text": "교대 인력 부족도 기록됐으나, 지연에 미친 영향은 확인되지 않습니다.",
+                          "citation_document_ids": ["handover", "unknown"]},
+        "next_action": None, "cited_document_ids": ["inspection"],
+        "conflicts": [], "retry_queries": [],
+    }
+    monkeypatch.setattr(judgment.settings, "openai_api_key", "stub")
+    monkeypatch.setattr(judgment, "get_openai_client", lambda: SimpleNamespace(
+        responses=SimpleNamespace(create=lambda **_: SimpleNamespace(output_text=json.dumps(payload)))
+    ))
+    outcome = assess_evidence(plan, packets)
+    report = validate_answer_report(plan, outcome, packets, None)
+    assert report.status == "supported"
+    assert report.presentation == "adaptive"
+    assert report.evidence_note.document_ids == ["handover"]
+    assert render_answer_text(report, {"inspection": 1, "handover": 2}) == (
+        "검수 장비 입고가 늦었습니다. [1]\n\n"
+        "교대 인력 부족도 기록됐으나, 지연에 미친 영향은 확인되지 않습니다. [2]"
+    )
+
+
+@pytest.mark.parametrize(("status", "body", "source_id"), [
+    ("supported", "이미 본문에 있는 정보입니다. [1]", "record"),
+    ("supported", "확인된 원인입니다. [1]", "missing"),
+    ("conflict", "두 기록이 직접 모순됩니다. [1]", "record"),
+])
+def test_note_does_not_duplicate_body_or_appear_without_valid_evidence(status, body, source_id):
+    question = "처리 결과를 설명해줘."
+    plan = QueryPlan(question, question, [question])
+    packet = _packet(_document("record", "notion", "업무 기록"), "근거가 있는 내용")
+    assessment = EvidenceAssessment(
+        status=status, answer=body, cited_document_ids=["record"],
+        report=AnswerReport(
+            answer_type="direct", status=status, headline="업무 기록", body=body,
+            evidence_note=EvidenceNote(text="이미 본문에 있는 정보입니다.", document_ids=[source_id]),
+        ),
+    )
+    report = validate_answer_report(plan, assessment, [packet], None)
+    assert report.status == status
+    assert report.evidence_note is None
+    assert render_answer_text(report, {"record": 1}) == body
+
+
+@pytest.mark.parametrize(("values", "second_quote", "expected"), [
+    (("부품 미입고", "작업 인력 부족"), "주된 지연 사유는 작업 인력 부족입니다.", "conflict"),
+    (("부품 미입고", "부품 미입고"), "주된 지연 사유는 부품 미입고입니다.", "supported"),
+    (("부품 미입고", "작업 인력 부족"), "원문에 없는 설명입니다.", "supported"),
+])
+def test_recorded_value_difference_is_independent_of_evidence_order(
+    monkeypatch, values, second_quote, expected,
+):
+    question = "출고 검수가 왜 밀렸어?"
+    plan = QueryPlan(question, question, [question], requested_fields=["reason"])
+    first_quote = "출고 검수가 늦은 이유는 부품 미입고입니다."
+    packets = [
+        _packet(_document("inspection-a", "notion", "시설 기록 1"), first_quote),
+        _packet(_document("inspection-b", "notion", "시설 기록 2"),
+                f"출고 검수의 주된 지연 사유는 {values[1]}입니다."),
+    ]
+    payload = {
+        "status": "supported", "answer": "부품 미입고로 검수가 늦었습니다. [1]",
+        "headline": "검수 지연 사유", "detail": None, "facts": [], "evidence_note": None,
+        "compared_values": [{
+            "item": "출고 검수 지연 사유",
+            "subject_anchor": "출고 검수",
+            "observations": [
+                {"value": values[0], "document_id": "inspection-a", "quote": first_quote},
+                {"value": values[1], "document_id": "inspection-b", "quote": second_quote},
+            ],
+        }],
+        "next_action": None, "cited_document_ids": ["inspection-a"],
+        "conflicts": [], "retry_queries": [],
+    }
+    monkeypatch.setattr(judgment.settings, "openai_api_key", "stub")
+    monkeypatch.setattr(judgment, "get_openai_client", lambda: SimpleNamespace(
+        responses=SimpleNamespace(create=lambda **_: SimpleNamespace(output_text=json.dumps(payload)))
+    ))
+
+    for evidence in (packets, list(reversed(packets))):
+        outcome = assess_evidence(plan, evidence)
+        report = validate_answer_report(plan, outcome, evidence, None)
+        assert report.status == expected
+        if expected == "conflict":
+            assert report.presentation == "structured"
+            assert set(outcome.cited_document_ids) == {"inspection-a", "inspection-b"}
+            assert all(value in report.body for value in values)
+
+
+@pytest.mark.parametrize(("titles", "anchor", "expected"), [
+    (("동관 점검", "서관 점검"), "분기 기록", "insufficient"),
+    (("동관 점검", "동관 점검"), "동관 점검", "conflict"),
+])
+def test_collection_conflict_requires_identity_of_the_individual_record(
+    monkeypatch, titles, anchor, expected,
+):
+    question = "3월 정기 점검은?"
+    start, end = planner._time_range(question)
+    plan = QueryPlan(question, question, [question], cardinality="all", time_start=start, time_end=end)
+    quotes = [f"분기 기록 · {title} 시각: {time}" for title, time in zip(titles, ("07:00", "20:00"))]
+    packets = [
+        _packet(_document(str(i), "notion", title), quote)
+        for i, (title, quote) in enumerate(zip(titles, quotes))
+    ]
+    payload = {
+        "status": "conflict", "answer": "서로 충돌합니다.", "headline": "기록 충돌",
+        "detail": None, "facts": [], "evidence_note": None, "next_action": None,
+        "compared_values": [{
+            "item": "점검 시각", "subject_anchor": anchor,
+            "observations": [
+                {"value": value, "document_id": str(i), "quote": quotes[i]}
+                for i, value in enumerate(("07:00", "20:00"))
+            ],
+        }],
+        "cited_document_ids": ["0", "1"], "conflicts": ["시각 불일치"], "retry_queries": [],
+    }
+    monkeypatch.setattr(judgment.settings, "openai_api_key", "stub")
+    monkeypatch.setattr(judgment, "get_openai_client", lambda: SimpleNamespace(
+        responses=SimpleNamespace(create=lambda **_: SimpleNamespace(output_text=json.dumps(payload)))
+    ))
+    assessment = assess_evidence(plan, packets)
+    assert assessment.status == expected
+    if expected == "insufficient":
+        assert "충돌" not in assessment.answer
+        assert assessment.conflicts == []
 
 
 def _contact_plan() -> QueryPlan:

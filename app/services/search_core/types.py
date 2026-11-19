@@ -58,7 +58,12 @@ class QueryPlan:
     locked_entity_terms: list[str] = field(default_factory=list)
     collection_title_terms: list[str] = field(default_factory=list)
     collection_filters_supported: bool = False
+    collection_operation: Literal["count", "list"] | None = None
+    collection_scope_terms: list[str] = field(default_factory=list)
     collection_match_count: int | None = None
+    collection_undated_count: int = 0
+    content_scope_filters_supported: bool = False
+    content_scope_match_count: int | None = None
 
 
 @dataclass
@@ -122,6 +127,12 @@ class AnswerFact:
 
 
 @dataclass
+class EvidenceNote:
+    text: str
+    document_ids: list[str] = field(default_factory=list)
+
+
+@dataclass
 class AnswerReport:
     answer_type: AnswerType
     status: EvidenceStatus
@@ -132,6 +143,7 @@ class AnswerReport:
     next_action: str | None = None
     presentation: PresentationMode = "adaptive"
     warning: str | None = None
+    evidence_note: EvidenceNote | None = None
 
 
 @dataclass

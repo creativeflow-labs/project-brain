@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Project Brain</title>
-  <link rel="stylesheet" href="/static/styles.css?v=0.3.3">
+  <link rel="stylesheet" href="/static/styles.css?v=0.3.4">
 </head>
 <body>
   <div class="shell">
@@ -30,7 +30,7 @@
         <div class="status-line"><span class="pulse"></span><strong id="system-status">확인 중</strong></div>
         <p id="system-description">서버 상태를 확인하고 있습니다.</p>
       </div>
-      <p class="version">MVP v0.3.3 · Read only</p>
+      <p class="version">MVP v0.3.4 · 로컬 검증</p>
     </aside>
 
     <main>
@@ -111,6 +111,31 @@
 
         <div class="connector-grid">
           <article class="connector-card">
+            <div class="connector-brand">W</div>
+            <div class="connector-copy">
+              <h2>네이버웍스</h2>
+              <p>지정한 대화방·기간의 텍스트 메시지를 동기화하고 원문 근거로 검색합니다. 본인 전용 봇 전달은 채팅에서 전송문을 확인하고 승인한 뒤 실행합니다.</p>
+            </div>
+            <div id="works-status" class="connector-status" aria-live="polite"><strong>연결 전</strong><span>Lite 가입과 Developer Console 설정이 필요합니다.</span></div>
+            <form id="works-connect-form" autocomplete="off">
+              <label>Client ID<input name="client_id" required maxlength="200" autocomplete="off"></label>
+              <label>Client Secret<input name="client_secret" type="password" required autocomplete="off"></label>
+              <label>Service Account<input name="service_account" required maxlength="320" autocomplete="off"></label>
+              <label>Private Key<textarea name="private_key" rows="3" required spellcheck="false" autocomplete="off" placeholder="발급받은 RSA 개인 키(PEM)"></textarea></label>
+              <button class="primary-button" type="submit">인증 확인 후 암호화 저장</button>
+            </form>
+            <form id="works-download-form">
+              <label>확인할 대화방 ID<input name="channel_id" required maxlength="200" placeholder="대화방 서랍에서 확인한 채널 ID"></label>
+              <label>대화방 이름<input name="channel_name" maxlength="120" placeholder="예: 나와의 대화, 프로젝트 업무방"></label>
+              <label>조회 시작<input name="start" type="datetime-local" required></label>
+              <label>조회 종료<input name="end" type="datetime-local" required></label>
+              <button class="primary-button" type="submit" data-action="sync" disabled>메시지 동기화 · 검색에 반영</button>
+              <button class="secondary-button" type="submit" data-action="download" disabled>원본 CSV 다운로드</button>
+            </form>
+            <button id="works-disconnect" class="text-button" type="button" disabled>연결 정보 삭제</button>
+            <p class="connector-note">읽기 전용 · 1회 최대 31일·10MB, 검색 적재 최대 1,000건. 재동기화 시 동일 메시지는 중복 저장하지 않습니다. 인증 정보는 암호화 저장하고 AI로 보내지 않으며, 동기화한 본문은 기존 PB 검색·AI 분석 흐름에 사용됩니다. 원본 링크는 웹 메신저를 열며 정확한 메시지는 대화방·시각으로 확인합니다.</p>
+          </article>
+          <article class="connector-card">
             <div class="connector-brand notion">N</div>
             <div class="connector-copy">
               <h2>Notion</h2>
@@ -169,6 +194,8 @@
   </dialog>
 
   <div id="toast" class="toast"></div>
-  <script src="/static/app.js?v=0.3.3"></script>
+  <script src="/static/app.js?v=0.3.4"></script>
+  <script src="/static/naverworks.js?v=0.3.4"></script>
+  <script src="/static/delivery.js?v=0.3.4"></script>
 </body>
 </html>

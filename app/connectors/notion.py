@@ -16,8 +16,7 @@ from app.models import Document
 from app.services.ingestion import IngestionInput, ingest_document
 from app.services.parser import ParsedSection, SUPPORTED_EXTENSIONS, parse_file_bytes
 from app.services.record_metadata import (
-    extract_record_title,
-    infer_record_type,
+    STRUCTURED_DATE_FIELDS,
     parse_recorded_datetime,
 )
 
@@ -522,7 +521,17 @@ class NotionConnector:
         collection_id = page.get("_project_brain_collection_id") or (
             parent.get("data_source_id") or parent.get("database_id")
         )
-        record_type = infer_record_type(title, page_text)
+        # Only an explicit structured source field can declare a record type.
+        # Existing inferred metadata is not migrated or treated as declared.
+        properties = page.get("properties") or {}
+        record_fields = {}
+        for name in ("record_type", "record_title"):
+            prop = properties.get(name) or {}
+            if prop.get("type") in {"select", "rich_text", "title"}:
+                value = _property_text(name, prop).partition(": ")[2].strip()
+                if value:
+                    record_fields[name] = value
+        record_type = record_fields.get("record_type")
         recorded_at = parse_recorded_datetime(title)
         metadata = {
             "metadata_schema_version": NOTION_METADATA_SCHEMA_VERSION,
@@ -537,12 +546,18 @@ class NotionConnector:
             **hierarchy_metadata,
         }
         if record_type:
-            metadata["record_type"] = record_type
-            metadata["record_title"] = extract_record_title(title, page_text)
+            metadata["record_type"] = record_type.casefold()
+            metadata["record_type_source"] = "declared"
+            metadata["record_title"] = record_fields.get("record_title") or title
+            for name in STRUCTURED_DATE_FIELDS:
+                prop = properties.get(name) or {}
+                if prop.get("type") == "date":
+                    value = (prop.get("date") or {}).get("start")
+                    if value:
+                        metadata[name] = value
         if recorded_at:
+            # Keep the legacy date as a general search hint, not an upload timestamp.
             metadata["recorded_at"] = recorded_at.isoformat()
-            if record_type == "video":
-                metadata["recorded_upload_at"] = recorded_at.isoformat()
         metadata = {key: value for key, value in metadata.items() if value is not None}
         existing_page = db.scalar(
             select(Document).where(

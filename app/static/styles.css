@@ -251,3 +251,13 @@ dialog textarea { min-height: 88px; resize: vertical; }
   .document-row { grid-template-columns: 38px 1fr auto; }
   .warning-badge { display: none; }
 }
+
+.delivery-preview-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font: inherit;
+  line-height: 1.7;
+  padding: 16px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, .65);
+}

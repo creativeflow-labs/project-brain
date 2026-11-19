@@ -1,16 +1,132 @@
 from datetime import datetime
 
+import pytest
 from sqlalchemy import select
 
 from app.db import SessionLocal, init_db
-from app.models import Chunk, Document, Project
+from app.models import Chunk, ConversationMessage, Document, Project
 from app.services.ingestion import IngestionInput, ingest_document
+from app.services.search_core import planner
+from app.services.search_core.planner import plan_queries
 from app.services.search_core.retrieval import (
     build_evidence_packets,
     retrieve_candidates,
 )
 from app.services.search_core.collection import assess_scoped_collection
-from app.services.search_core.types import QueryPlan, SearchCandidate
+from app.services.search_core.types import EvidenceAssessment, QueryPlan, SearchCandidate
+from app.services.search_core.workflow import _retry_node, _route_after_assessment
+
+
+@pytest.mark.parametrize("question", [
+    "그럼 전체 현장의 설비 점검 기록으로 공통 체크리스트를 작성해줘.",
+    "그럼 전체 현장의 설비 점검 기록을 비교한 보고서를 작성해줘.",
+])
+def test_broad_compose_after_named_scope_uses_notion_only_evidence(question):
+    init_db()
+    with SessionLocal() as db:
+        project = Project(name="설비 기록 전용")
+        db.add(project)
+        db.flush()
+        ids = set()
+        for site in ("라온", "다온"):
+            document, _ = ingest_document(db, IngestionInput(
+                project_id=project.id, source_type="notion", external_id=f"site-{site}",
+                title=f"{site} 현장 설비 점검 기록",
+                text=f"{site} 현장 설비 점검 기록: 안전장치와 잠금 상태를 확인했다.",
+            ))
+            ids.add(document.id)
+
+        plan = plan_queries(
+            question,
+            [ConversationMessage(role="user", content="라온 현장의 설비 점검 기록을 찾아줘.")],
+        )
+        candidates = retrieve_candidates(db, project.id, plan)
+        packets = build_evidence_packets(db, project.id, plan, candidates)
+        assert (plan.scope_mode, plan.task_mode) == ("collection", "compose")
+        assert not plan.locked_entity_terms
+        assert plan.resolved_question == question
+        assert all("라온" not in query and "협업" not in query for query in plan.search_queries)
+        assert {packet.document.id for packet in packets} == ids
+
+
+def test_compose_collection_can_retry_without_adopting_a_new_target():
+    question = "전체 시설의 변경 이력을 비교한 보고서를 작성해줘."
+    plan = plan_queries(question, [])
+    assessment = EvidenceAssessment(
+        status="insufficient", answer="근거 부족", cited_document_ids=[],
+        retry_queries=["처음 요청에 없던 단일 시설의 변경 이력"],
+    )
+    state = {"plan": plan, "assessment": assessment, "retry_count": 0, "packets": []}
+    assert _route_after_assessment(state) == "retry"
+
+    updated = _retry_node(state)
+    retry_plan = updated["plan"]
+    assert retry_plan.scope_mode == "collection"
+    assert retry_plan.locked_entity_terms == []
+    assert retry_plan.resolved_question == question
+    assert len(retry_plan.search_queries) == len(plan.search_queries) + 1
+    assert all("단일 시설" not in query for query in retry_plan.search_queries)
+    assert _route_after_assessment({**state, **updated}) == "finish"
+
+
+def test_content_search_preserves_target_period_and_classification(monkeypatch):
+    init_db()
+    with SessionLocal() as db:
+        project = Project(name="복수 근거 설명")
+        db.add(project)
+        db.commit()
+        data = [
+            ("라온", "점검", "정기", "2026-07-10", "A 구역은 센서 교체가 필요합니다."),
+            ("라온", "점검", "정기", "2026-07-24", "B 구역은 배선을 수리해야 합니다."),
+            ("라온", "점검", "수시", "2026-07-10", "정기 점검을 본문에서만 언급합니다."),
+            ("다온", "점검", "정기", "2026-07-10", "타 현장에서는 별도 작업을 진행했습니다."),
+            ("라온", "점검", "정기", "2026-08-10", "본문의 참고 날짜는 2026-07-24입니다."),
+            ("라온", "공지", "정기", "2026-07-10", "동일 조건을 언급하는 별도 공지입니다."),
+        ]
+        for index, (site, kind, label, date, text) in enumerate(data):
+            ingest_document(db, IngestionInput(
+                project_id=project.id,
+                source_type="notion",
+                external_id=f"scope-content-{index}",
+                title=f"{site} {label} {kind} {index}",
+                text=text,
+                metadata={
+                    "record_type": kind,
+                    "ancestor_titles": ["시설 관리", f"현장 {site}"],
+                    "occurred_at": date,
+                },
+            ))
+
+        question = "라온 현장 7월 정기 점검 기록의 내용을 설명해줘."
+        draft = QueryPlan(
+            question, question, [question], record_type="점검", cardinality="one",
+            time_start=datetime.fromisoformat("2026-07-01T00:00:00+09:00"),
+            time_end=datetime.fromisoformat("2026-07-31T23:59:59+09:00"),
+            time_field="occurred_at", content_scope_filters_supported=True,
+            collection_scope_terms=["라온 현장"], collection_title_terms=["정기"],
+        )
+        monkeypatch.setattr(planner, "_llm_plan", lambda *_: draft)
+        plan = plan_queries(question, [])
+        candidates = retrieve_candidates(db, project.id, plan)
+        packets = build_evidence_packets(db, project.id, plan, candidates)
+
+        assert plan.retrieval_mode == "hybrid"
+        assert plan.collection_operation is None
+        assert plan.collection_match_count is None
+        assert plan.content_scope_match_count == 2
+        assert {packet.document.external_id for packet in packets} == {
+            "scope-content-0", "scope-content-1",
+        }
+        assert any("센서 교체" in packet.context_text for packet in packets)
+        assert any("배선을 수리" in packet.context_text for packet in packets)
+        assert assess_scoped_collection(plan, packets) is None
+
+        # If the structured range cannot be found, ordinary evidence search remains
+        # available, without claiming verified coverage or switching to aggregation.
+        plan.collection_scope_terms = ["아직 등록되지 않은 현장"]
+        assert retrieve_candidates(db, project.id, plan)
+        assert plan.content_scope_match_count is None
+        assert plan.collection_match_count is None
 
 
 def test_gmail_thread_context_is_expanded_and_quoted_copy_is_removed():
@@ -238,9 +354,6 @@ def test_scoped_video_collection_excludes_receipts_and_returns_complete_list():
                 "record_title": title,
                 "recorded_upload_at": f"2026-06-{day:02d}T{hour:02d}:00:00+09:00",
             }
-            if day == 2:
-                metadata.pop("record_type")
-                metadata.pop("record_title")
             document, _ = ingest_document(
                 db,
                 IngestionInput(
@@ -288,6 +401,7 @@ def test_scoped_video_collection_excludes_receipts_and_returns_complete_list():
             time_field="published_at",
             retrieval_mode="scoped",
             record_type="video",
+            collection_operation="list",
         )
 
         candidates = retrieve_candidates(db, project.id, plan)

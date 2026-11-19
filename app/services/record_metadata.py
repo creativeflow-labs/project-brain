@@ -6,6 +6,25 @@ from zoneinfo import ZoneInfo
 
 
 SEOUL = ZoneInfo("Asia/Seoul")
+STRUCTURED_DATE_FIELDS = {
+    "published_at": ("published_at", "recorded_upload_at"),
+    "received_at": ("received_at",),
+    "sent_at": ("sent_at",),
+    "updated_at": ("updated_at", "last_edited_time"),
+    "occurred_at": ("occurred_at",),
+}
+
+
+def structured_record_date(metadata: dict, field: str | None) -> datetime | None:
+    for key in STRUCTURED_DATE_FIELDS.get(field or "occurred_at", ()):
+        value = metadata.get(key)
+        if isinstance(value, str):
+            try:
+                parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            except ValueError:
+                continue
+            return parsed.replace(tzinfo=SEOUL) if parsed.tzinfo is None else parsed
+    return None
 
 
 def _normalise_text(value: str) -> str:
@@ -74,24 +93,11 @@ def parse_recorded_datetime(
 
 
 def infer_record_type(title: str, text: str, metadata: dict | None = None) -> str | None:
+    """Return a declared record type; prose formats do not prove a type."""
     metadata = metadata or {}
     stored = metadata.get("record_type")
-    if isinstance(stored, str) and stored:
-        return stored
-
-    combined = _normalise_text(f"{title}\n{text}")
-    lowered = combined.lower()
-    has_video_sections = "📌 제목" in combined and "📌 설명" in combined
-    has_video_fields = any(
-        marker in lowered
-        for marker in ("영상 제목:", "업로드 시간:", "게시 시간:", "published_at")
-    )
-    has_episode_title = bool(
-        re.search(r"\bep\s*\d+(?:-\d+)?\b", lowered)
-        and parse_recorded_datetime(title, metadata)
-    )
-    if has_video_sections or has_video_fields or has_episode_title:
-        return "video"
+    if isinstance(stored, str) and stored.strip():
+        return stored.strip().casefold()
     return None
 
 
@@ -103,22 +109,4 @@ def extract_record_title(
     if isinstance(stored, str) and stored.strip():
         return stored.strip()
 
-    lines = [_normalise_text(line).strip() for line in text.splitlines()]
-    for index, line in enumerate(lines):
-        if line.rstrip(":：") != "📌 제목":
-            continue
-        for candidate in lines[index + 1 :]:
-            if not candidate or candidate.strip("-— ") == "":
-                continue
-            if candidate.startswith("📌"):
-                break
-            return candidate
-
-    for pattern in (
-        r"(?:영상\s*제목|제목)\s*[:：]\s*(.+)",
-        r"record_title\s*[:：]\s*(.+)",
-    ):
-        match = re.search(pattern, _normalise_text(text), flags=re.IGNORECASE)
-        if match:
-            return match.group(1).splitlines()[0].strip()
     return document_title.strip()

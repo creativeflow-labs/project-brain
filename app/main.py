@@ -26,6 +26,8 @@ from app.connectors.gmail import (
 from app.connectors.notion import NotionApiError, NotionConnector
 from app.db import get_db, init_db
 from app.models import ConnectorCredential, Document, Project
+from app.naverworks_routes import router as naverworks_router
+from app.action_routes import router as action_router
 from app.schemas import (
     AskRequest,
     AskResponse,
@@ -78,6 +80,8 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(title=settings.app_name, version=APP_VERSION, lifespan=lifespan)
+app.include_router(naverworks_router)
+app.include_router(action_router)
 app.mount("/static", StaticFiles(directory=Path(__file__).parent / "static"), name="static")
 
 

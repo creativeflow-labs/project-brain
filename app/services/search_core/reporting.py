@@ -7,6 +7,7 @@ from app.services.search_core.types import (
     AnswerReport,
     CurrentStateAssessment,
     EvidenceAssessment,
+    EvidenceNote,
     EvidencePacket,
     QueryPlan,
 )
@@ -36,6 +37,7 @@ def _fact_role(
     source_label = {
         "notion": "Notion",
         "gmail": "Gmail",
+        "naverworks": "네이버웍스",
         "upload": "직접 업로드",
     }.get(source, source)
     if plan.requested_field == "contact":
@@ -320,6 +322,18 @@ def validate_answer_report(
     body = _body_text(candidate.body or assessment.answer)
     if not body:
         body = detail or headline
+    evidence_note = None
+    if (
+        status == "supported" and answer_type == "direct"
+        and plan.task_mode == "answer" and candidate.evidence_note
+    ):
+        note_text = _plain_text(re.sub(r"\[\d+]", "", candidate.evidence_note.text), 500)
+        note_ids = list(dict.fromkeys(
+            doc_id for doc_id in candidate.evidence_note.document_ids if doc_id in valid_ids
+        ))[:2]
+        plain_body = " ".join(re.sub(r"\[\d+]|\*\*", "", body or "").split())
+        if note_text and note_ids and " ".join(note_text.split()) not in plain_body:
+            evidence_note = EvidenceNote(text=note_text, document_ids=note_ids)
 
     presentation = (
         "artifact"
@@ -343,6 +357,7 @@ def validate_answer_report(
         status=status,
         headline=headline,
         body=body,
+        evidence_note=evidence_note,
         facts=facts,
         detail=detail,
         next_action=next_action,
@@ -355,6 +370,15 @@ def render_answer_text(
     report: AnswerReport, document_positions: dict[str, int] | None = None
 ) -> str:
     if report.body:
+        if report.evidence_note and document_positions:
+            positions = [
+                document_positions[doc_id]
+                for doc_id in report.evidence_note.document_ids
+                if doc_id in document_positions
+            ]
+            if positions:
+                source_refs = " ".join(f"[{position}]" for position in positions)
+                return f"{report.body}\n\n{report.evidence_note.text} {source_refs}"
         return report.body
     lines = [report.headline]
     for fact in report.facts:

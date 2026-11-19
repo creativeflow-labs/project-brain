@@ -8,7 +8,7 @@ from app.config import get_settings
 from app.services.search_core.collection import assess_scoped_collection
 from app.services.search_core.judgment import assess_evidence
 from app.services.search_core.planner import (
-    can_prefetch_embedding, extend_plan_for_retry, plan_queries,
+    can_prefetch_embedding, extend_plan_for_retry, plan_queries, repeated_scoped_plan,
 )
 from app.services.search_core.prefetch import start_prefetch, take_ready
 from app.services.search_core.retrieval import (
@@ -33,6 +33,13 @@ def _updated_timings(
 def _plan_node(state: SearchState) -> dict:
     started_at = perf_counter()
     question = state["question"].strip()
+    repeated = repeated_scoped_plan(question, state["history"])
+    if repeated is not None:
+        return {
+            "plan": repeated,
+            "prepared_embeddings": {},
+            "timings_ms": _updated_timings(state, "plan", started_at),
+        }
     future = None
     if settings.search_embedding_prefetch and can_prefetch_embedding(question):
         future = start_prefetch(question)
@@ -103,9 +110,11 @@ def _route_after_assessment(state: SearchState) -> str:
     plan = state["plan"]
     if not assessment.retry_queries:
         return "finish"
-    if plan.task_mode == "compose" and plan.scope_mode == "collection":
-        return "finish"
     if state.get("retry_count", 0) >= settings.search_max_retries:
+        return "finish"
+    if plan.task_mode == "compose" and extend_plan_for_retry(
+        plan, assessment.retry_queries
+    ).search_queries == plan.search_queries:
         return "finish"
     if assessment.status == "insufficient":
         return "retry"

@@ -22,6 +22,7 @@ from app.services.search_core.reporting import (
     validate_answer_report,
 )
 from app.services.search_core.conversation import assistant_identity_answer
+from app.services.search_core.planner import scoped_plan_snapshot
 from app.services.search_core.state_engine import current_state_to_dict
 from app.services.search_core.types import EvidencePacket
 from app.services.search_core.workflow import search_graph
@@ -154,15 +155,28 @@ def answer_question(
         for position, packet in enumerate(packets, start=1)
     }
     answer_report_payload = answer_report_to_dict(answer_report)
+    answer_text = render_answer_text(answer_report, packet_positions)
+    citation_limit = settings.search_scoped_record_limit if plan.retrieval_mode == "scoped" else top_k
+    if answer_report.evidence_note:
+        # Prefer the two sides of the visible answer over unused citations.
+        body_ids = [
+            packets[int(position) - 1].document.id
+            for position in re.findall(r"\[(\d+)]", answer_report.body or "")
+            if 1 <= int(position) <= len(packets)
+        ]
+        primary_ids = body_ids[:1] or [
+            doc_id for doc_id in assessment.cited_document_ids if doc_id in packet_positions
+        ][:1]
+        paired_ids = list(dict.fromkeys([*primary_ids, *answer_report.evidence_note.document_ids]))
+        display_document_ids = list(dict.fromkeys(
+            [*paired_ids, *body_ids, *display_document_ids]
+        ))
+        citation_limit = max(citation_limit, len(paired_ids))
     answer, citations = _answer_and_citations(
-        render_answer_text(answer_report, packet_positions),
+        answer_text,
         packets,
         display_document_ids,
-        (
-            settings.search_scoped_record_limit
-            if plan.retrieval_mode == "scoped"
-            else top_k
-        ),
+        citation_limit,
     )
     answer_report_payload["body"] = answer
     citation_snapshot = [citation.model_dump(mode="json") for citation in citations]
@@ -205,6 +219,7 @@ def answer_question(
             "collection_title_terms": plan.collection_title_terms,
             "collection_filters_supported": plan.collection_filters_supported,
             "collection_match_count": plan.collection_match_count,
+            "content_scope_match_count": plan.content_scope_match_count,
             "candidate_count": result.get("candidate_count", 0),
             "evidence_document_ids": [
                 packet.document.id for packet in packets
@@ -239,6 +254,7 @@ def answer_question(
         evidence_json={
             "status": assessment.status,
             "trace_id": trace.id,
+            "scoped_plan": scoped_plan_snapshot(plan) if assessment.status == "supported" else None,
             "document_ids": display_document_ids,
             "citations": citation_snapshot,
             "conflicts": assessment.conflicts,

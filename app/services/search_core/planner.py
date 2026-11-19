@@ -11,8 +11,7 @@ from app.config import get_settings
 from app.models import ConversationMessage
 from app.services.openai_client import get_openai_client
 from app.services.search_core.conversation import assistant_identity_answer
-from app.services.search_core.collection_contract import video_operation
-from app.services.search_core.types import QueryPlan
+from app.services.search_core.types import QueryPlan, ScopeMode
 
 settings = get_settings()
 
@@ -77,23 +76,14 @@ COMPOSE_MARKERS = (
     "draft",
     "template",
 )
-ENTITY_STOP_WORDS = {
-    "ai",
-    "youtube",
-    "유튜브",
-    "유료",
-    "무료",
-    "협업",
-    "제안",
-    "메일",
-    "이메일",
-    "답장",
-    "회신",
-    "파트너십",
-    "프로젝트",
-    "draft",
-    "template",
-}
+SCOPE_QUANTIFIER = r"(?:전체|전부|모든|모두|전반|all|every|across)"
+SCOPE_PREFIX = re.compile(r"^(?:(?:그럼|그러면|이번에는|이번엔|이제|이어서)[\s,]+)+")
+SCOPE_REFERENCE = re.compile(r"^(?:그|이|저|해당|직전|이전|앞선|같은)(?:\s|$)")
+SCOPE_IDENTIFIER = re.compile(
+    r"^(?:[“\"‘']([^”\"’']+)[”\"’']|([A-Za-z][A-Za-z0-9._-]{2,}))"
+    r"(?=\s|[의와과에은는이가는부터까지]|$)"
+)
+SCOPE_POSSESSIVE = re.compile(r"^(.{2,60}?)의\s+")
 SEOUL = ZoneInfo("Asia/Seoul")
 
 
@@ -251,24 +241,15 @@ def _cardinality(question: str, time_start: datetime | None) -> str:
     return "one"
 
 
-def _record_type(question: str) -> str | None:
-    lowered = question.lower()
-    if any(value in lowered for value in ("유튜브", "youtube", "영상")):
-        return "video"
-    return None
-
-
-def _retrieval_mode(cardinality: str, record_type: str | None) -> str:
-    return "scoped" if cardinality == "all" and record_type else "hybrid"
-
-
-def _parse_plan_datetime(value: object) -> datetime | None:
+def _parse_plan_datetime(value: object, *, end_of_day: bool = False) -> datetime | None:
     if not isinstance(value, str) or not value.strip():
         return None
     try:
         parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
     except ValueError:
         return None
+    if end_of_day and re.fullmatch(r"\d{4}-\d{2}-\d{2}", value.strip()):
+        parsed = parsed.replace(hour=23, minute=59, second=59, microsecond=999999)
     return parsed.replace(tzinfo=SEOUL) if parsed.tzinfo is None else parsed
 
 
@@ -293,129 +274,58 @@ def _task_mode(question: str) -> str:
     )
 
 
-def _collaboration_collection_question(question: str) -> bool:
-    compact = re.sub(r"\s+", "", question.lower())
-    return "협업제안" in compact or (
-        "협업" in compact
-        and any(marker in compact for marker in ("메일", "이메일", "제안"))
-    )
-
-
-def _explicit_entity_terms(question: str) -> list[str]:
-    candidates: list[str] = []
-    patterns = (
-        r"([A-Za-z][A-Za-z0-9._-]{2,}|[가-힣][가-힣0-9._-]{1,})\s*(?:와|과|의)?\s*(?:협업|제안)",
-        r"\b([A-Za-z][A-Za-z0-9._-]{2,})\b(?=.{0,24}(?:협업|제안|메일|이메일))",
-        r"\b([A-Za-z][A-Za-z0-9._-]{2,})\.(?:ai|com|io|co)\b",
-        r"([A-Za-z][A-Za-z0-9._-]{2,})\s*(?:메일|이메일|답장|회신)",
-    )
-    for pattern in patterns:
-        for value in re.findall(pattern, question):
-            cleaned = value.strip(" ._- ").lower()
-            if (
-                cleaned
-                and cleaned not in ENTITY_STOP_WORDS
-                and cleaned not in STOP_WORDS
-                and cleaned not in candidates
-            ):
-                candidates.append(cleaned)
-    return candidates[:5]
+def _surface_scope(question: str) -> tuple[ScopeMode, list[str]]:
+    """Conservative signals from the current wording, independent of data source."""
+    text = SCOPE_PREFIX.sub("", question.strip()).strip()
+    if not text or SCOPE_REFERENCE.match(text):
+        return "open", []
+    # A leading quantifier without a named qualifier replaces the previous
+    # target. A qualifier before the quantifier keeps the range within it.
+    if re.match(rf"^{SCOPE_QUANTIFIER}(?=\s|[를을는가만도]|[?.!]|$)", text, re.I):
+        return "collection", []
+    if match := SCOPE_IDENTIFIER.match(text):
+        term = (match[1] or match[2]).strip().rstrip(".").lower()
+        if term and not re.fullmatch(SCOPE_QUANTIFIER, term, re.I):
+            return "entity", [term]
+    if match := SCOPE_POSSESSIVE.match(text):
+        term = match[1].strip().lower()
+        if not re.search(r"[,!?/]", term):
+            return "entity", [term]
+    return "open", []
 
 
 def _apply_request_contract(
     plan: QueryPlan,
     question: str,
-    history: list[ConversationMessage],
 ) -> QueryPlan:
     task_mode = _task_mode(question)
-    explicit_entities = _explicit_entity_terms(question)
-    prior_user = next(
-        (message for message in reversed(history) if message.role == "user"), None
-    )
-    inherits_scope = bool(
-        prior_user
-        and not explicit_entities
-        and _is_follow_up(question)
-    )
-
-    if explicit_entities:
-        scope_mode = "entity"
-        locked_entities = explicit_entities
-    elif inherits_scope:
-        scope_mode = "inherited"
-        prior_basis = _conversation_basis(prior_user)
-        locked_entities = _explicit_entity_terms(prior_basis)
-    elif task_mode == "compose" and _collaboration_collection_question(question):
-        scope_mode = "collection"
-        locked_entities = []
-    else:
-        scope_mode = "open"
-        locked_entities = []
-
-    # 회사명이 없는 협업 템플릿 요청은 특정 브랜드를 임의 선택하지 않고,
-    # 동일한 고정 쿼리로 관련 제안들의 공통 패턴을 수집합니다.
-    if task_mode == "compose" and scope_mode == "collection":
-        return replace(
-            plan,
-            task_mode=task_mode,
-            scope_mode=scope_mode,
-            locked_entity_terms=locked_entities,
-            is_state_query=False,
-            cardinality="all",
-            entity_terms=["협업", "제안", "메일", "파트너십"],
-            search_queries=[
-                question.strip(),
-                "협업 제안 메일",
-                "파트너십 제안 이메일",
-                "협업 제안 회신 조건 보상 일정 산출물 권한",
-            ],
-            retrieval_mode="hybrid",
-            record_type=None,
-        )
+    scope_mode, locked_entities = _surface_scope(question)
+    # The independent interpretation can recognize a qualifier elsewhere in
+    # the sentence, e.g. "전체 자료 중 …만". Only a named, anchored term may
+    # narrow a leading broad scope.
+    if scope_mode == "open" or (
+        scope_mode == "collection"
+        and plan.scope_mode == "entity"
+        and plan.locked_entity_terms
+    ):
+        scope_mode, locked_entities = plan.scope_mode, plan.locked_entity_terms
     return replace(
         plan,
         task_mode=task_mode,
         scope_mode=scope_mode,
         locked_entity_terms=locked_entities,
+        cardinality="all" if scope_mode == "collection" else plan.cardinality,
         is_state_query=False if task_mode == "compose" else plan.is_state_query,
-    )
-
-
-def _plain_dated_video_list(question: str) -> bool:
-    """Keep the established plain monthly-list fast path, not topic filters."""
-    allowed = {"크랩", "유튜브", "youtube", "crab", "영상", "영상의", "제목", "제목을", "제목과",
-               "업로드", "시간", "시간을", "포함", "포함해서", "리스트", "리스트로",
-               "목록", "목록을", "전체", "전부", "모두", "제시해줘", "알려줘", "채널", "함께",
-               "채널의", "올해", "작년", "년", "월", "해당", "그럼", "몇", "개야",
-               "개", "편", "편이야", "개수", "개수는", "몇편", "몇개", "영상은",
-               "월에", "발행된", "시간과"}
-    return video_operation(question) in {"list", "count"} and all(
-        term in allowed for term in _keywords(question)
     )
 
 
 def _can_use_deterministic_plan(question: str) -> bool:
     task_mode = _task_mode(question)
-    explicit_entities = _explicit_entity_terms(question)
-    if (
+    scope_mode, _ = _surface_scope(question)
+    return (
         task_mode == "answer"
-        and explicit_entities
+        and scope_mode == "entity"
         and _requested_field(question) in {"contact", "money"}
-    ):
-        return True
-    if (
-        task_mode == "compose"
-        and _collaboration_collection_question(question)
-        and not explicit_entities
-    ):
-        return True
-
-    time_start, _ = _time_range(question)
-    return bool(
-        time_start is not None
-        and _cardinality(question, time_start) == "all"
-        and _record_type(question) is not None
-        and _plain_dated_video_list(question)
     )
 
 
@@ -428,9 +338,13 @@ def extend_plan_for_retry(plan: QueryPlan, retry_queries: list[str]) -> QueryPla
             ),
         )
 
-    # 작성형 전체 종합은 이미 여러 문서를 모으므로 모델이 제안한 특정 회사명으로
-    # 재검색하지 않습니다. 특정 대상 작성은 최초에 잠근 대상만 사용합니다.
-    if plan.scope_mode == "collection" or not plan.locked_entity_terms:
+    # A retry may not substitute an unrelated target for the planned scope.
+    if plan.scope_mode == "collection":
+        clarification = f"{plan.resolved_question} 관련 원문 교차 확인"
+        return replace(plan, search_queries=list(dict.fromkeys(
+            [*plan.search_queries, clarification]
+        )))
+    if not plan.locked_entity_terms:
         return plan
     locked_query = " ".join(
         [
@@ -460,8 +374,10 @@ def _fallback_plan(
         prior_basis = _conversation_basis(prior_user)
 
     resolved = question.strip()
-    current_entities = _explicit_entity_terms(question)
-    if prior_basis and _is_follow_up(question) and not current_entities:
+    scope_mode, locked_entities = _surface_scope(question)
+    if prior_basis and _is_follow_up(question) and scope_mode == "open":
+        scope_mode = "inherited"
+        _, locked_entities = _surface_scope(prior_basis)
         resolved = f"{prior_basis} / 후속 질문: {question.strip()}"
 
     current_terms = _keywords(question)
@@ -476,14 +392,13 @@ def _fallback_plan(
 
     time_start, time_end = _time_range(resolved)
     cardinality = _cardinality(resolved, time_start)
-    record_type = _record_type(resolved)
     queries = [resolved]
     if question.strip() != resolved:
         queries.append(question.strip())
     if entity_terms:
         field_hint = {
             "contact": "담당자 연락처",
-            "money": "협업비 비용 예산 제안 금액",
+            "money": "비용 예산 견적 금액",
             "date": "일정 날짜 마감",
             "status": "현재 상태 진행 완료 수정 요청 승인 보류 취소 최신",
         }.get(_requested_field(question), "")
@@ -511,12 +426,9 @@ def _fallback_plan(
         time_end=time_end,
         time_field=_time_field(question),
         is_state_query=_is_state_query(question),
-        retrieval_mode=_retrieval_mode(cardinality, record_type),
-        record_type=record_type,
-        collection_filters_supported=(
-            record_type == "video" and time_start is not None
-            and _plain_dated_video_list(resolved.replace(" / 후속 질문: ", " "))
-        ),
+        retrieval_mode="hybrid",
+        scope_mode=scope_mode,
+        locked_entity_terms=locked_entities,
     )
 
 
@@ -579,6 +491,44 @@ def _llm_plan(
                 "type": "array", "items": {"type": "string"}, "maxItems": 5,
             },
             "collection_filters_supported": {"type": "boolean"},
+            "content_record_scope": {
+                "type": ["object", "null"],
+                "description": (
+                    "Explicit record selection for a request to explain, compare or summarize "
+                    "record contents, independent of list/count eligibility. Null when no "
+                    "structured record selector is stated."
+                ),
+                "properties": {
+                    "record_type": {
+                        "type": "string",
+                        "description": "Record type as a lowercase singular machine identifier.",
+                    },
+                    "group_terms": {
+                        "type": "array", "items": {"type": "string"}, "maxItems": 5,
+                        "description": "Names in the request identifying the collection or group.",
+                    },
+                    "title_terms": {
+                        "type": "array", "items": {"type": "string"}, "maxItems": 5,
+                        "description": "Explicit record classifications visible in titles, not body topics.",
+                    },
+                },
+                "required": ["record_type", "group_terms", "title_terms"],
+                "additionalProperties": False,
+            },
+            "collection_operation": {
+                "type": ["string", "null"], "enum": ["count", "list", None],
+                "description": (
+                    "list includes a bare question asking which records match a type and filters "
+                    "without the word list. null for contents, explanation, comparison or a scalar fact."
+                ),
+            },
+            "collection_scope_terms": {"type": "array", "items": {"type": "string"}, "maxItems": 5},
+            "collection_record_type": {
+                "type": ["string", "null"],
+                "description": "A singular, lowercase English machine identifier (e.g. document, event), not a translated display label.",
+            },
+            "scope_mode": {"type": "string", "enum": ["open", "entity", "inherited", "collection"]},
+            "scope_terms": {"type": "array", "items": {"type": "string"}, "maxItems": 5},
         },
         "required": [
             "resolved_question",
@@ -593,6 +543,12 @@ def _llm_plan(
             "is_state_query",
             "collection_title_terms",
             "collection_filters_supported",
+            "content_record_scope",
+            "collection_operation",
+            "collection_scope_terms",
+            "collection_record_type",
+            "scope_mode",
+            "scope_terms",
         ],
         "additionalProperties": False,
     }
@@ -606,17 +562,43 @@ def _llm_plan(
             store=False,
             instructions=(
                 "당신은 팀 지식 검색 쿼리 설계기다. 대화 기록은 검색 문맥일 뿐 사실 근거가 아니다. "
-                "현재 질문의 생략된 대상만 복원해 독립 질문으로 만들고, 같은 사건의 반대·최신 근거도 "
-                "찾을 수 있는 짧은 검색 쿼리를 작성한다. 사용자가 요구한 항목과 기간, 한 건인지 전체 "
+                "현재 질문의 생략된 대상만 복원해 독립 질문으로 만든다. "
+                "현재 질문에 대상 또는 자료 범위가 명시되면 이전 범위보다 우선하며, 이전 질문의 대상·조건을 "
+                "resolved_question이나 search_queries에 추가하지 않는다. scope_mode는 지정 대상이면 entity, "
+                "이전 대상 제한을 풀고 자료 범위를 종합하면 collection, 현재 질문에서 생략되어 이전 대상을 "
+                "정말 가져온 경우만 inherited, 그 외 open이다. 특정 대상 내부의 전체는 entity다. "
+                "scope_terms에는 지정 대상의 원문 표현만 넣는다. 범위 표시어 자체는 대상이 아니다. "
+                "같은 사건의 반대·최신 근거도 찾을 수 있는 짧은 검색 쿼리를 작성한다. "
+                "사용자가 요구한 항목과 기간, 한 건인지 전체 "
                 "목록인지 보존한다. is_state_query는 현재 진행 상태나 현재 단계를 직접 묻는 경우에만 "
                 "참으로 지정하고, 거절 이유·원인·설명 질문에는 거짓으로 지정한다. 기록에 없는 사실은 "
                 "추가하지 않는다."
-                " 영상 개수·목록 질문의 collection_title_terms에는 제목에 반드시 포함되어야 하는 "
-                "명시적인 분류·주제만 넣는다(예: 실전편). 채널명, 영상, 날짜는 넣지 않는다. "
-                "모든 조건을 제목 부분문자열 AND와 기간으로 정확히 적용할 수 있을 때만 "
-                "collection_filters_supported=true로 한다. 내용의 의미 분석, 공개 완료 여부, "
-                "동의어 OR 조건이 필요하면 false로 한다. 내용 설명 질문도 false다. "
-                "현재 질문에 없는 이전 질문의 분류·개수·목록 요구를 계승하지 않는다."
+                " 정확한 목록이나 개수를 요청한 경우에만 collection_operation을 지정한다. "
+                "범위와 조건이 붙은 자료 종류 뒤에 '은?' 또는 '는?'으로 끝나고, 이전 대화에서 "
+                "이어받을 작업이나 본문 분석 요청이 없다면, 어떤 항목이 있는지 나열하는 요청(list)이다. "
+                "예: '동관 3월 정기 점검 기록은?'은 분류·월·자료 묶음으로 점검 기록을 나열한다. "
+                "'그 점검 기록의 원인을 설명해줘'는 목록 요청이 아니다. 현재의 독립적인 자료 선택 요청에 "
+                "이전 답변이 수행한 설명·비교·판정을 가져오지 않는다. 목록에서 출력 항목을 생략하면 title만 쓴다. "
+                "collection_record_type은 요청된 기록 유형, collection_scope_terms는 자료 묶음을 "
+                "한정하는 질문 속 명칭, collection_title_terms는 제목에 명시적으로 요구된 검색어다. "
+                "collection_scope_terms는 자료 묶음의 실제 고유 명칭만 넣고, 이름 뒤 일반적인 유형명은 넣지 않는다. "
+                "기간을 붙여 게시물·발행물 목록을 선택하면 업로드나 게시라는 말이 생략되어도 "
+                "그 기록의 게시일(published_at)을 기간 필드로 쓴다. "
+                "기록 유형은 번역한 표시명이 아니라 영문 단수 식별자를 사용한다. 구조화 목록의 "
+                "requested_fields에는 표시 문구 대신 title과 해당 time_field 같은 명시적 키를 쓴다. "
+                "구조화된 기록 유형·자료 묶음·날짜·제목만으로 모든 조건과 출력 필드를 표현할 수 "
+                "있을 때만 collection_filters_supported=true로 제안한다. 실제 데이터가 있는지나 모든 "
+                "시각이 채워졌는지는 추측하지 않는다. 서버가 조회 단계에서 확인한다. "
+                "내용의 의미나 상태 판단, 제외·OR 조건, 순위·개수 제한이 필요하면 "
+                "false로 한다. 기간이 명시된 경우 검증 가능한 시작과 종료를 모두 적는다. "
+                "본문 설명·비교·요약에서는 collection_operation=null, collection_filters_supported=false다. "
+                "그렇더라도, 질문이 기록 유형과 함께 특정 자료 묶음·기간·분류 중 하나 이상을 지정하면 "
+                "그 대상 조건을 content_record_scope에 채운다. 이는 본문에서 찾을 주제가 아니라 "
+                "설명할 자료를 고르는 조건이다. 제목 필터에는 제목에 드러나는 기록 분류만 넣는다. "
+                "기간이 출판·게시 대상 기록을 제한하면 time_field=published_at을 사용한다. "
+                "일반적인 관련 내용 검색이거나 제외·OR 조건 등 대상을 이 필드로 표현할 수 없으면 "
+                "content_record_scope=null이다. "
+                "현재 요청에 없는 이전 질문의 작업이나 조건을 계승하지 않는다."
             ),
             input=json.dumps(
                 {
@@ -646,12 +628,36 @@ def _llm_plan(
             marker in question.lower()
             for marker in ("왜", "이유", "원인", "까였", "거절된 이유")
         )
-        record_type = _record_type(payload["resolved_question"])
+        record_type = payload.get("collection_record_type")
+        if record_type:
+            record_type = record_type.strip().casefold() or None
+        collection_operation = payload.get("collection_operation")
+        content_scope = payload.get("content_record_scope") if not collection_operation else None
+        model_start = _parse_plan_datetime(payload["time_start"])
+        model_end = _parse_plan_datetime(
+            payload["time_end"], end_of_day=bool(collection_operation or content_scope)
+        )
+        structured_dates = bool(
+            (model_start is None and model_end is None and deterministic_start is None)
+            or (model_start is not None and model_end is not None and model_start <= model_end)
+        )
+        content_scope_filters_supported = bool(content_scope and structured_dates)
+        if content_scope:
+            record_type = content_scope["record_type"].strip().casefold() or None
         final_cardinality = (
             "all"
             if deterministic_cardinality == "all"
             else payload["cardinality"]
         )
+        scope_mode = payload["scope_mode"]
+        scope_source = question if scope_mode == "entity" else ""
+        if scope_mode == "inherited":
+            scope_source = "\n".join(
+                message.content for message in history if message.role == "user"
+            )
+            if not scope_source:
+                scope_mode = "open"
+        scope_source = scope_source.casefold()
         return QueryPlan(
             original_question=question.strip(),
             resolved_question=payload["resolved_question"].strip(),
@@ -678,22 +684,117 @@ def _llm_plan(
             ],
             cardinality=final_cardinality,
             time_start=(
-                deterministic_start or _parse_plan_datetime(payload["time_start"])
+                model_start if (collection_operation and structured_dates) or content_scope_filters_supported
+                else deterministic_start or model_start
             ),
-            time_end=deterministic_end or _parse_plan_datetime(payload["time_end"]),
+            time_end=(
+                model_end if (collection_operation and structured_dates) or content_scope_filters_supported
+                else deterministic_end or model_end
+            ),
             time_field=_time_field(question) or payload["time_field"],
             is_state_query=bool(payload["is_state_query"] and not has_cause_marker),
-            retrieval_mode=_retrieval_mode(final_cardinality, record_type),
+            retrieval_mode="hybrid",
             record_type=record_type,
+            scope_mode=scope_mode,
+            locked_entity_terms=[
+                item.strip().casefold()
+                for item in payload["scope_terms"]
+                if item.strip()
+                and item.strip().casefold() in scope_source
+                and not re.fullmatch(SCOPE_QUANTIFIER, item.strip(), re.I)
+            ],
             collection_title_terms=[
-                term.strip() for term in payload.get("collection_title_terms", []) if term.strip()
+                term.strip() for term in (
+                    content_scope["title_terms"] if content_scope
+                    else payload.get("collection_title_terms", [])
+                ) if term.strip()
             ],
             collection_filters_supported=bool(
-                payload.get("collection_filters_supported", False)
+                payload.get("collection_filters_supported", False) and structured_dates
             ),
+            collection_operation=collection_operation,
+            collection_scope_terms=[
+                term.strip() for term in (
+                    content_scope["group_terms"] if content_scope
+                    else payload.get("collection_scope_terms", [])
+                ) if term.strip()
+            ],
+            content_scope_filters_supported=content_scope_filters_supported,
         )
     except Exception:
         return None
+
+
+def scoped_plan_snapshot(plan: QueryPlan) -> dict | None:
+    """Persist selectors, not results, only after a structured lookup succeeded."""
+    if (
+        plan.retrieval_mode != "scoped" or plan.collection_match_count is None
+        or not plan.collection_filters_supported or not plan.record_type
+        or plan.collection_operation not in {"list", "count"}
+        or plan.scope_mode == "inherited" or _is_follow_up(plan.original_question)
+        or SCOPE_REFERENCE.match(SCOPE_PREFIX.sub("", plan.original_question.strip()))
+    ):
+        return None
+    return {
+        "version": 1,
+        "day": datetime.now(SEOUL).date().isoformat(),
+        "question": plan.original_question,
+        "resolved": plan.resolved_question,
+        "queries": plan.search_queries,
+        "entities": plan.entity_terms,
+        "field": plan.requested_field,
+        "fields": plan.requested_fields,
+        "start": plan.time_start.isoformat() if plan.time_start else None,
+        "end": plan.time_end.isoformat() if plan.time_end else None,
+        "time_field": plan.time_field,
+        "type": plan.record_type,
+        "scope": plan.scope_mode,
+        "locked": plan.locked_entity_terms,
+        "title": plan.collection_title_terms,
+        "operation": plan.collection_operation,
+        "group": plan.collection_scope_terms,
+    }
+
+
+def repeated_scoped_plan(
+    question: str, history: list[ConversationMessage],
+) -> QueryPlan | None:
+    question = question.strip()
+    last_user = next((message for message in reversed(history) if message.role == "user"), None)
+    if last_user is None or last_user.content.strip() != question:
+        return None
+    day = datetime.now(SEOUL).date().isoformat()
+    for message in reversed(history):
+        if message.role != "assistant":
+            continue
+        saved = (message.evidence_json or {}).get("scoped_plan")
+        if (
+            not isinstance(saved, dict) or saved.get("version") != 1
+            or saved.get("question") != question or saved.get("day") != day
+            or saved.get("operation") not in {"list", "count"}
+            or saved.get("scope") not in {"open", "entity", "collection"}
+        ):
+            continue
+        start = _parse_plan_datetime(saved.get("start"))
+        end = _parse_plan_datetime(saved.get("end"))
+        if (
+            (saved.get("start") is not None) != (start is not None)
+            or (saved.get("end") is not None) != (end is not None)
+            or (start is None) != (end is None)
+            or (start is not None and end is not None and start > end)
+        ):
+            continue
+        return QueryPlan(
+            original_question=question, resolved_question=saved["resolved"],
+            search_queries=list(saved["queries"]), entity_terms=list(saved["entities"]),
+            requested_field=saved["field"], requested_fields=list(saved["fields"]),
+            cardinality="all", time_start=start, time_end=end, time_field=saved["time_field"],
+            retrieval_mode="scoped", record_type=saved["type"], scope_mode=saved["scope"],
+            locked_entity_terms=list(saved["locked"]), collection_title_terms=list(saved["title"]),
+            collection_filters_supported=True, collection_operation=saved["operation"],
+            collection_scope_terms=list(saved["group"]),
+        )
+    return None
 
 
 def can_prefetch_embedding(question: str) -> bool:
@@ -713,19 +814,36 @@ def plan_queries(
     if assistant_identity_answer(question):
         return QueryPlan(original_question=question.strip(),
                          resolved_question=question.strip(), search_queries=[])
+    scope_mode, _ = _surface_scope(question)
+    if scope_mode != "open":
+        history = []
     if _can_use_deterministic_plan(question):
         plan = _fallback_plan(question, history)
     else:
         plan = _llm_plan(question, history) or _fallback_plan(question, history)
-    plan = _apply_request_contract(plan, question, history)
-    if plan.record_type == "video":
-        operation = video_operation(question)
-        if operation == "describe" or not plan.collection_filters_supported:
-            # Multiple relevant records do not imply an unfiltered full-list answer.
-            plan = replace(
-                plan, retrieval_mode="hybrid",
-                cardinality="many" if plan.cardinality == "all" else plan.cardinality,
-            )
-        elif operation in {"count", "list"}:
-            plan = replace(plan, retrieval_mode="scoped", cardinality="all")
+    plan = _apply_request_contract(plan, question)
+    if (
+        plan.task_mode == "answer" and not plan.is_state_query
+        and plan.collection_operation in {"count", "list"}
+        and plan.collection_filters_supported and plan.record_type
+        and (
+            plan.collection_operation == "count"
+            or set(plan.requested_fields).issubset({"title", plan.time_field})
+        )
+        and (plan.scope_mode not in {"entity", "inherited"} or plan.collection_scope_terms)
+    ):
+        plan = replace(plan, retrieval_mode="scoped", cardinality="all")
+    else:
+        plan = replace(
+            plan, retrieval_mode="hybrid",
+            cardinality="many" if plan.record_type and plan.cardinality == "all" else plan.cardinality,
+            content_scope_filters_supported=bool(
+                plan.content_scope_filters_supported
+                and plan.task_mode == "answer" and not plan.is_state_query
+                and not plan.collection_operation and plan.record_type
+                and (plan.scope_mode not in {"entity", "inherited"} or plan.collection_scope_terms)
+                and (plan.collection_scope_terms or plan.collection_title_terms
+                     or (plan.time_start is not None and plan.time_end is not None))
+            ),
+        )
     return plan

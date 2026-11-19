@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import unicodedata
 
 from app.config import get_settings
 from app.services.openai_client import get_openai_client
@@ -11,6 +12,7 @@ from app.services.search_core.types import (
     AnswerReport,
     CurrentStateAssessment,
     EvidenceAssessment,
+    EvidenceNote,
     EvidencePacket,
     QueryPlan,
 )
@@ -367,6 +369,64 @@ def _fallback_assessment(
     )
 
 
+def _normalise_recorded_text(value: str) -> str:
+    return " ".join(unicodedata.normalize("NFKC", value).casefold().split())
+
+
+def _verified_different_values(
+    comparisons: list[dict], packets: list[EvidencePacket], *, require_record_identity: bool = False,
+) -> list[tuple[str, list[tuple[str, str]]]]:
+    """Compare only grounded values that refer to the same requested item."""
+    sources = {
+        packet.document.id: _normalise_recorded_text(packet.context_text)
+        for packet in packets
+    }
+    identities = {
+        packet.document.id: {
+            _normalise_recorded_text(value)
+            for value in (
+                packet.document.title,
+                (packet.document.metadata_json or {}).get("record_title"),
+                (packet.document.metadata_json or {}).get("record_id"),
+            )
+            if isinstance(value, str) and value
+        }
+        for packet in packets
+    } if require_record_identity else {}
+    stable_ids = {
+        packet.document.id: value
+        for packet in packets
+        if isinstance(value := (packet.document.metadata_json or {}).get("record_id"), str) and value
+    } if require_record_identity else {}
+    differences: list[tuple[str, list[tuple[str, str]]]] = []
+    for comparison in comparisons:
+        item = comparison["item"].strip()
+        anchor = _normalise_recorded_text(comparison.get("subject_anchor") or "")
+        if not item or len(anchor) < 2:
+            continue
+        verified: dict[tuple[str, str], tuple[str, str]] = {}
+        for observation in comparison["observations"]:
+            doc_id = observation["document_id"]
+            value = observation["value"].strip()
+            quote = _normalise_recorded_text(observation["quote"])
+            key = _normalise_recorded_text(value).strip(" .,:;!?")
+            key = re.sub(r"(?<=\d),(?=\d)", "", key)
+            source = sources.get(doc_id, "")
+            if (
+                key and quote and quote in source
+                and anchor in source
+                and (not require_record_identity or anchor in identities.get(doc_id, set()))
+            ):
+                verified.setdefault((key, doc_id), (value, doc_id))
+        if (
+            len({key for key, _ in verified}) > 1
+            and len({doc_id for _, doc_id in verified}) > 1
+            and len({stable_ids[doc_id] for _, doc_id in verified if doc_id in stable_ids}) <= 1
+        ):
+            differences.append((item, [verified[key] for key in sorted(verified)]))
+    return differences
+
+
 def _llm_assessment(
     plan: QueryPlan,
     packets: list[EvidencePacket],
@@ -394,6 +454,43 @@ def _llm_assessment(
             "answer": {"type": "string"},
             "headline": {"type": "string"},
             "detail": {"type": ["string", "null"]},
+            "evidence_note": {
+                "type": ["object", "null"],
+                "properties": {
+                    "text": {"type": "string"},
+                    "citation_document_ids": {
+                        "type": "array", "items": {"type": "string"},
+                        "minItems": 1, "maxItems": 2,
+                    },
+                },
+                "required": ["text", "citation_document_ids"],
+                "additionalProperties": False,
+            },
+            "compared_values": {
+                "type": "array", "maxItems": 4,
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "item": {"type": "string"},
+                        "subject_anchor": {"type": "string"},
+                        "observations": {
+                            "type": "array", "maxItems": 4,
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "value": {"type": "string"},
+                                    "document_id": {"type": "string"},
+                                    "quote": {"type": "string"},
+                                },
+                                "required": ["value", "document_id", "quote"],
+                                "additionalProperties": False,
+                            },
+                        },
+                    },
+                    "required": ["item", "subject_anchor", "observations"],
+                    "additionalProperties": False,
+                },
+            },
             "facts": {
                 "type": "array",
                 "maxItems": 4,
@@ -444,6 +541,8 @@ def _llm_assessment(
             "answer",
             "headline",
             "detail",
+            "evidence_note",
+            "compared_values",
             "facts",
             "next_action",
             "cited_document_ids",
@@ -463,7 +562,19 @@ def _llm_assessment(
             instructions=(
                 "당신은 팀 업무 사실 판정기다. 오직 제공된 원문 근거만 사용한다. 대화의 이전 AI 답변은 "
                 "절대 사실 근거로 취급하지 않는다. 같은 사건·같은 항목의 값이 다르면 conflict로 판정하고 "
-                "어느 하나를 임의로 선택하지 않는다. Gmail이 항상 우선이거나 Notion이 항상 우선인 규칙은 "
+                "어느 하나를 임의로 선택하지 않는다. 직접 부정하는지는 조건이 아니다. "
+                "같은 사건의 이유를 물었는데 기록마다 직접 사유나 주된 이유로 "
+                "다른 내용을 제시하면, 양립할 수 있어도 기록값 차이로 표시한다. "
+                "일반 답변은 상태를 결론짓기 전에 질문에 직접 답하는 같은 대상·사건·시점·항목의 기록값을 "
+                "compared_values에 묶어 기록한다. 뜻이 같은 표기는 같은 정규값으로 쓰고, 다른 값은 "
+                "누락하지 않는다. 각 관측에 원문에서 그대로 복사한 연속 인용문 quote와 document_id를 "
+                "넣는다. subject_anchor에는 모든 관측 원문에 같은 표기로 명시된 비교 대상 자체의 "
+                "구체적인 식별자나 이름을 그대로 쓴다. 목록에서는 목록 이름, 기간, 분류, 소속이 아니라 "
+                "비교하는 개별 행의 이름 또는 공통 식별자를 반드시 사용한다. 목록에 여러 항목이 있는 "
+                "것이나 개별 항목 이름이 서로 다른 것은 충돌이 아니다. 같은 행인지 확인할 수 없으면 "
+                "비교 묶음을 만들지 않는다. 문서에 값이 없는 것은 다른 값이 아니며, 다른 사건·항목·역할은 같은 묶음으로 "
+                "합치지 않는다. 직접 비교할 수 있는 값이 없으면 compared_values=[]이다. "
+                "Gmail이 항상 우선이거나 Notion이 항상 우선인 규칙은 "
                 "없다. 외부 제안, 내부 메모, 발신 답장처럼 기록의 역할을 구분한다. '금액 미제안', "
                 "'검색에서 금액을 못 찾음', '사용자가 답장으로 제시한 금액'을 서로 다른 사실로 다룬다. "
                 "상태 질문에는 함께 제공된 current_state 판정을 우선 적용하고, 완료 주장과 완료 승인을 "
@@ -473,9 +584,15 @@ def _llm_assessment(
                 "요구하면 자연스러운 설명문으로, 전체 목록을 요구하면 근거 안에서 해당 항목을 빠짐없이 "
                 "목록으로, 이메일이나 문서 초안을 요구하면 실제로 사용할 수 있는 초안 형태로 작성한다. "
                 "task_mode가 compose이면 검증 보고서보다 사용자가 바로 쓸 결과물을 중심으로 작성한다. "
-                "scope_mode가 collection이면 특정 회사 하나를 임의로 대표 사례로 선택하지 말고 여러 근거의 "
-                "공통 패턴을 종합해 재사용 가능한 템플릿을 만든다. 이때 서로 다른 회사의 조건 차이는 충돌이 "
-                "아니며, 회사마다 달라지는 값은 자리표시자로 둔다. "
+                "일반 supported 답변에서는 답을 읽는 사람의 판단이나 결론의 확실성을 바꾸는 보충 근거가 "
+                "있다면 evidence_note에 명시한다. 확인된 결론과 양립할 수 있는 추가 관점이나 아직 확인되지 "
+                "않은 중요한 한계를 한두 문장으로 설명하고, 그 문장을 뒷받침하는 원문 ID를 첨부한다. "
+                "evidence_note는 본문 뒤에 자동으로 추가되므로 같은 내용을 answer나 detail에 반복하지 "
+                "않는다. 일반 배경, 같은 내용의 반복, 동일 항목의 값 차이에 관한 경고는 이 필드에 넣지 않는다. "
+                "적합한 보충 근거가 없거나 원문을 지정할 수 없으면 evidence_note=null이다. "
+                "scope_mode가 collection이면 요청 범위 내 여러 근거를 폭넓게 비교하고 한 사례로 임의 축소하지 "
+                "않는다. 사용자가 공통 양식을 요청한 경우에만 공통 패턴을 양식으로 만들고, 사례에 따라 "
+                "달라지는 값은 자리표시자로 둔다. 서로 다른 대상의 차이를 같은 대상의 기록 충돌로 보지 않는다. "
                 "모든 답변을 검증 보고서 형식으로 바꾸지 않는다. headline은 상태 알림이 필요할 때 사용할 "
                 "짧은 요약이다. facts는 충돌 비교나 상태 판정처럼 구조화가 실제로 도움이 될 때만 최대 "
                 "4개를 넣고, 일반 답변·설명·목록·초안에서는 비워도 된다. 담당자는 외부 연락 담당자, 우리 팀 "
@@ -485,9 +602,11 @@ def _llm_assessment(
                 "작업은 가능한 범위에서 계속 수행하고, 확인되지 않은 값은 자리표시자로 둔다. insufficient이면 "
                 "현재 검색에서 찾지 못한 것과 실제로 존재하지 않는 것을 구분한다. 답변의 핵심 주장 뒤에는 "
                 "입력 배열 순서에 따른 [1] 형식의 인용을 붙인다. 충돌·부족 시에만 필요한 추가 확인을 "
-                "next_action과 retry_queries에 제안한다. 영상 개수 질문에서 "
-                "collection_match_count가 null이면 근거 문서 개수를 전체 영상 개수로 단정하지 않는다. "
-                "확인한 사례 수와 전체 집계 가능 여부를 구분한다."
+                "next_action과 retry_queries에 제안한다. 전체 개수나 목록을 요청했는데 "
+                "collection_match_count가 null이면 검색한 문서 수를 전체 건수로 단정하지 않는다. "
+                "확인한 사례 수와 전체 집계 가능 여부를 구분한다. "
+                "content_scope_coverage가 주어지면 확보한 각 기록의 본문을 요청한 방식으로 설명한다. "
+                "일부 기록만 전달됐거나 기록의 설명 근거가 부족하면 빠진 내용을 단정하지 말고 그 한계를 명시한다."
             ),
             input=json.dumps(
                 {
@@ -499,6 +618,13 @@ def _llm_assessment(
                     "requested_fields": plan.requested_fields,
                     "cardinality": plan.cardinality,
                     "collection_match_count": plan.collection_match_count,
+                    **(
+                        {"content_scope_coverage": {
+                            "indexed_matches": plan.content_scope_match_count,
+                            "documents_supplied": len({packet.document.id for packet in packets}),
+                        }}
+                        if plan.content_scope_match_count is not None else {}
+                    ),
                     "time_range": (
                         {
                             "start": plan.time_start.isoformat(),
@@ -555,27 +681,69 @@ def _llm_assessment(
                 ]
             )
         )
+        note = payload.get("evidence_note")
+        status = payload["status"]
+        answer = payload["answer"].strip()
+        headline = payload["headline"].strip()
+        detail = payload["detail"].strip() if payload["detail"] else None
+        conflicts = payload["conflicts"]
+        if plan.task_mode == "answer" and not plan.is_state_query:
+            selection = plan.collection_operation in {"list", "count"} or (
+                plan.cardinality in {"all", "many"} and not plan.requested_fields
+                and plan.time_start is not None and plan.time_end is not None
+                and re.search(r"(?:은|는)\??$", plan.original_question.rstrip())
+            )
+            differences = _verified_different_values(
+                payload.get("compared_values", []), packets, require_record_identity=selection
+            )
+            if differences:
+                positions = {packet.document.id: index for index, packet in enumerate(packets, 1)}
+                lines = []
+                for item, observations in differences:
+                    for value, doc_id in observations:
+                        lines.append(f"- {item}: {value} [{positions[doc_id]}]")
+                        if doc_id not in cited_ids:
+                            cited_ids.append(doc_id)
+                if status != "conflict":
+                    headline = "같은 항목의 기록값이 서로 다릅니다."
+                    answer = headline + "\n\n" + "\n".join(lines)
+                    detail = None
+                conflicts = list(dict.fromkeys([*conflicts, *lines]))
+                status = "conflict"
+                note = None
+            elif status == "conflict" and selection:
+                status = "insufficient"
+                headline = "현재 근거로 전체 목록을 확인할 수 없습니다."
+                answer = "찾은 자료만으로 전체 목록을 확인할 수 없습니다. 연결된 원문을 확인해 주세요."
+                detail = None
+                facts = []
+                conflicts = []
+                note = None
         assessment = EvidenceAssessment(
-            status=payload["status"],
-            answer=payload["answer"].strip(),
+            status=status,
+            answer=answer,
             cited_document_ids=cited_ids,
-            conflicts=payload["conflicts"],
+            conflicts=conflicts,
             retry_queries=[
                 query.strip() for query in payload["retry_queries"] if query.strip()
             ],
             report=AnswerReport(
                 answer_type=(
                     "conflict"
-                    if payload["status"] == "conflict"
+                    if status == "conflict"
                     else "insufficient"
-                    if payload["status"] == "insufficient"
+                    if status == "insufficient"
                     else "direct"
                 ),
-                status=payload["status"],
-                headline=payload["headline"].strip(),
-                body=payload["answer"].strip(),
+                status=status,
+                headline=headline,
+                body=answer,
+                evidence_note=EvidenceNote(
+                    text=note["text"],
+                    document_ids=note["citation_document_ids"],
+                ) if note else None,
                 facts=facts,
-                detail=payload["detail"].strip() if payload["detail"] else None,
+                detail=detail,
                 next_action=(
                     payload["next_action"].strip()
                     if payload["next_action"]

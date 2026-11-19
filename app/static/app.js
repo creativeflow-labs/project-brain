@@ -85,7 +85,7 @@ async function loadDocuments() {
 function sourceLabel(source) {
   return {
     upload: "직접 업로드", notion: "Notion", notion_attachment: "Notion 첨부",
-    gmail: "Gmail", gmail_attachment: "Gmail 첨부"
+    gmail: "Gmail", gmail_attachment: "Gmail 첨부", naverworks: "네이버웍스"
   }[source] || source;
 }
 
@@ -271,6 +271,7 @@ async function askQuestion(event) {
   const question = input.value.trim();
   if (!question) return;
   const startedAt = performance.now();
+  const requestProjectId = state.projectId;
   renderMessage("user", question);
   input.value = "";
   const button = $("#ask-form button");
@@ -291,15 +292,33 @@ async function askQuestion(event) {
   const elapsedTimer = setInterval(() => showElapsed("응답 준비 중"), 100);
   let completed = false;
   try {
-    const result = await api("/api/ask", {
-      method: "POST", headers: { "Content-Type": "application/json" },
+    const response = await api("/api/assistant/request", {
+      method: "POST", headers: { "Content-Type": "application/json", "X-Project-Brain-Client":"1" },
       body: JSON.stringify({
-        project_id: state.projectId,
+        project_id: requestProjectId,
         question,
         top_k: 6,
         thread_id: state.threadIds[state.projectId] || null
       })
     });
+    if (requestProjectId !== state.projectId) return;
+    if (response.kind === 'notice') {
+      pending.querySelector('.bubble').textContent = response.message;
+      completed = true;
+      return;
+    }
+    if (response.kind === 'delivery_preview') {
+      if (response.search_result) {
+        const source = response.search_result;
+        state.threadIds[requestProjectId] = source.thread_id;
+        registerAnswerEvidence(pending, source.answer_id, source.citations, source.current_state);
+        activateAnswerEvidence(source.answer_id);
+      }
+      renderDeliveryPreview(pending.querySelector('.bubble'), response.preview, requestProjectId);
+      completed = true;
+      return;
+    }
+    const result = response.result;
     state.threadIds[state.projectId] = result.thread_id;
     registerAnswerEvidence(pending, result.answer_id, result.citations, result.current_state);
     const bubble = pending.querySelector(".bubble");

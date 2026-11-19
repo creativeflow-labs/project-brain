@@ -179,3 +179,19 @@ class WorkStateSnapshot(Base):
     as_of: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     assessment_json: Mapped[dict] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class MessageDelivery(Base):
+    """Immutable approval snapshot and durable outbound attempt, not a retry queue."""
+    __tablename__ = "message_deliveries"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_string)
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
+    status: Mapped[str] = mapped_column(String(20), default="pending", index=True)
+    approval_hash: Mapped[str] = mapped_column(String(64))
+    payload_json: Mapped[dict] = mapped_column(JSON)
+    completed_parts: Mapped[int] = mapped_column(Integer, default=0)
+    result_message: Mapped[str] = mapped_column(Text, default="")
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)

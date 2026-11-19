@@ -13,7 +13,9 @@ from sqlalchemy.orm import Session
 from app.config import get_settings
 from app.models import Chunk, Document
 from app.services.embeddings import embedding_service
-from app.services.record_metadata import infer_record_type, extract_record_title
+from app.services.record_metadata import (
+    extract_record_title, infer_record_type, structured_record_date,
+)
 from app.services.search_core.candidate_store import load_candidate_rows
 from app.services.search_core.scoring import (
     BM25Corpus,
@@ -176,64 +178,69 @@ def _text_datetimes(text: str, fallback_year: int) -> list[datetime]:
 
 def _scoped_document_ids(
     rows: list[tuple[Chunk, Document]], plan: QueryPlan
-) -> set[str]:
-    if plan.retrieval_mode != "scoped" or not plan.record_type:
-        return {document.id for _, document in rows}
-    document_text: defaultdict[str, list[str]] = defaultdict(list)
-    documents: dict[str, Document] = {}
-    for chunk, document in rows:
-        documents[document.id] = document
-        document_text[document.id].append(chunk.text)
-    matching_ids = {
-        document_id
-        for document_id, document in documents.items()
-        if document.source_type == "notion"
-        and infer_record_type(
-            document.title,
-            "\n".join(document_text[document_id]),
-            document.metadata_json or {},
+) -> set[str] | None:
+    """None means exact coverage is unknown; never pick a 'best' collection."""
+    documents = {document.id: document for _, document in rows}
+    resolved = plan.resolved_question.casefold()
+    if any(term.casefold() not in resolved for term in plan.collection_scope_terms):
+        return None
+    exact_patterns = [
+        re.compile(r"(?<!\w)" + re.escape(term.casefold()) + r"(?!\w)")
+        for term in plan.collection_scope_terms
+    ]
+    # Legacy display labels can put a descriptor before the proper name.
+    # Match its tokens within one label and still require a single parent.
+    scope_patterns = [
+        [re.compile(r"(?<!\w)" + re.escape(token) + r"(?!\w)") for token in term.casefold().split()]
+        for term in plan.collection_scope_terms
+    ]
+    matching_ids: set[str] = set()
+    legacy_parents: set[str] = set()
+    undated_count = 0
+    for document in documents.values():
+        metadata = document.metadata_json or {}
+        legacy = (
+            document.source_type == "notion" and metadata.get("metadata_schema_version")
+            and metadata.get("record_type_source") != "declared"
         )
-        == plan.record_type
-    }
-    grouped: defaultdict[str, set[str]] = defaultdict(set)
-    unscoped_ids: set[str] = set()
-    for document_id in matching_ids:
-        metadata = documents[document_id].metadata_json or {}
-        collection_id = metadata.get("collection_id")
-        if collection_id:
-            grouped[str(collection_id)].add(document_id)
-        else:
-            unscoped_ids.add(document_id)
-    if not grouped or len(matching_ids) == 0:
-        return matching_ids
-    scoped_coverage = (len(matching_ids) - len(unscoped_ids)) / len(matching_ids)
-    if scoped_coverage < 0.8:
-        return matching_ids
-
-    def group_score(item: tuple[str, set[str]]) -> tuple[int, int]:
-        _, document_ids = item
-        searchable_parts: list[str] = []
-        for document_id in document_ids:
-            searchable_parts.extend(
-                [
-                    str(
-                        (documents[document_id].metadata_json or {}).get(
-                            "collection_title", ""
-                        )
-                    ),
-                    documents[document_id].title,
-                    *document_text[document_id][:2],
-                ]
-            )
-        searchable = "\n".join(searchable_parts)
-        lowered = searchable.lower()
-        entity_hits = sum(
-            1 for term in plan.entity_terms if term and term.lower() in lowered
+        scope_values = [
+            str(metadata.get("collection_id") or ""),
+            str(metadata.get("collection_title") or ""),
+            *(str(value) for value in (metadata.get("ancestor_titles") or [])),
+        ]
+        applies = (
+            all(any(all(p.search(value.casefold()) for p in patterns) for value in scope_values)
+                for patterns in scope_patterns)
+            if legacy else
+            all(any(p.search(value.casefold()) for value in scope_values) for p in exact_patterns)
         )
-        return entity_hits, len(document_ids)
-
-    _, selected_ids = max(grouped.items(), key=group_score)
-    return selected_ids
+        if not applies:
+            continue
+        record_type = infer_record_type(document.title, "", metadata)
+        if record_type != plan.record_type:
+            continue
+        title = extract_record_title(document.title, "", metadata).casefold()
+        matches_title = all(term.casefold() in title for term in plan.collection_title_terms)
+        if legacy:
+            # Retain the existing indexed collection only when independently scoped
+            # to one fully identified parent; never guess a collection by rank.
+            parent = metadata.get("collection_id") or metadata.get("parent_id")
+            if not scope_patterns or not metadata.get("hierarchy_complete") or not parent:
+                return None
+            legacy_parents.add(parent)
+            if len(legacy_parents) > 1:
+                return None
+        displays_date = plan.collection_operation == "list" and plan.time_field in plan.requested_fields
+        if matches_title and (displays_date or (plan.time_start is not None and plan.time_end is not None)):
+            field = plan.time_field or "occurred_at"
+            if structured_record_date(metadata, field) is None:
+                if legacy and plan.time_start is not None and plan.time_end is not None:
+                    undated_count += 1
+                    continue
+                return None
+        matching_ids.add(document.id)
+    plan.collection_undated_count = undated_count
+    return matching_ids or None
 
 
 def _row_matches_time_range(chunk: Chunk, document: Document, plan: QueryPlan) -> bool:
@@ -259,25 +266,93 @@ def _row_matches_time_range(chunk: Chunk, document: Document, plan: QueryPlan) -
     return any(start <= _normalise_datetime(value) <= end for value in values)
 
 
+def _content_scope_document_ids(
+    rows: list[tuple[Chunk, Document]], plan: QueryPlan
+) -> set[str] | None:
+    """Narrow body evidence only when indexed data supports the explicit filters."""
+    resolved = plan.resolved_question.casefold()
+    terms = [term.casefold().strip() for term in plan.collection_scope_terms]
+    title_terms = [term.casefold().strip() for term in plan.collection_title_terms]
+    if any(not term or term not in resolved for term in [*terms, *title_terms]):
+        return None
+    # Collection names and ancestor labels can order the same words differently.
+    scope_parts = [part for term in terms for part in term.split()]
+    patterns = [
+        re.compile(r"(?<!\w)" + re.escape(part) + r"(?!\w)") for part in scope_parts
+    ]
+    bounded = plan.time_start is not None and plan.time_end is not None
+    matches = set()
+    for document in {document.id: document for _, document in rows}.values():
+        metadata = document.metadata_json or {}
+        if infer_record_type(document.title, "", metadata) != plan.record_type:
+            continue
+        group_values = [
+            metadata.get("collection_id"), metadata.get("collection_title"),
+            *(metadata.get("ancestor_titles") or []),
+        ]
+        group_text = " ".join(str(value).casefold() for value in group_values if value)
+        if not all(pattern.search(group_text) for pattern in patterns):
+            continue
+        title = extract_record_title(document.title, "", metadata).casefold()
+        if not all(term in title for term in title_terms):
+            continue
+        if bounded:
+            recorded = structured_record_date(metadata, plan.time_field)
+            if recorded is None:
+                return None
+            if not plan.time_start <= recorded <= plan.time_end:
+                continue
+        matches.add(document.id)
+    return matches or None
+
+
 def retrieve_candidates(
     db: Session, project_id: str, plan: QueryPlan,
     *, prepared_embeddings: dict[str, list[float]] | None = None,
 ) -> list[SearchCandidate]:
     if not plan.search_queries:
         return []
-    embeddings = (
-        embedding_service.embed_queries(plan.search_queries, prepared=prepared_embeddings)
-        if prepared_embeddings else embedding_service.embed_queries(plan.search_queries)
-    )
-    rows = load_candidate_rows(db, project_id, plan, embeddings)
-    scoped_ids = _scoped_document_ids(rows, plan)
-    rows = [(chunk, document) for chunk, document in rows if document.id in scoped_ids]
+    rows = None
+    embeddings: list[list[float]] = []
+    if plan.retrieval_mode == "scoped":
+        rows = load_candidate_rows(db, project_id, plan, [])
+        scoped_ids = _scoped_document_ids(rows, plan)
+        if scoped_ids is None:
+            plan.retrieval_mode = "hybrid"
+            plan.collection_filters_supported = False
+            plan.collection_match_count = None
+        else:
+            embeddings = [[] for _ in plan.search_queries]
+            rows = [(chunk, document) for chunk, document in rows if document.id in scoped_ids]
+    if plan.retrieval_mode == "hybrid":
+        plan.content_scope_match_count = None
+        embeddings = (
+            embedding_service.embed_queries(plan.search_queries, prepared=prepared_embeddings)
+            if prepared_embeddings else embedding_service.embed_queries(plan.search_queries)
+        )
+        if rows is None:
+            # A bounded ranked pool could discard members before scope matching.
+            pool_plan = replace(plan, cardinality="many") if plan.content_scope_filters_supported else plan
+            rows = load_candidate_rows(db, project_id, pool_plan, embeddings)
+        if plan.content_scope_filters_supported:
+            ids = _content_scope_document_ids(rows, plan)
+            if ids:
+                plan.content_scope_match_count = len(ids)
+                rows = [(chunk, doc) for chunk, doc in rows if doc.id in ids]
+    assert rows is not None
     if plan.time_start is not None and plan.time_end is not None:
-        rows = [
-            (chunk, document)
-            for chunk, document in rows
-            if _row_matches_time_range(chunk, document, plan)
-        ]
+        if plan.retrieval_mode == "scoped":
+            rows = [
+                (chunk, document) for chunk, document in rows
+                if (recorded := structured_record_date(
+                    document.metadata_json or {}, plan.time_field
+                )) is not None and plan.time_start <= recorded <= plan.time_end
+            ]
+        elif plan.content_scope_match_count is None:
+            rows = [
+                (chunk, document) for chunk, document in rows
+                if _row_matches_time_range(chunk, document, plan)
+            ]
     if plan.retrieval_mode == "scoped":
         # Apply constraints before ranking/limits; scores alone are not filters.
         if plan.collection_title_terms:
@@ -393,12 +468,14 @@ def retrieve_candidates(
     )
     candidates: list[SearchCandidate] = []
     selected_combined = combined[: settings.search_rerank_limit]
-    if plan.cardinality == "all":
+    if plan.cardinality == "all" or plan.content_scope_match_count is not None:
         document_limit = (
             settings.search_compose_evidence_limit
             if plan.task_mode == "compose" and plan.scope_mode == "collection"
             else settings.search_scoped_record_limit
             if plan.retrieval_mode == "scoped"
+            else settings.search_evidence_limit
+            if plan.content_scope_match_count is not None
             else settings.search_collection_evidence_limit
         )
         selected_combined = []
@@ -497,7 +574,7 @@ def build_evidence_packets(
     for matches in by_document.values():
         document = matches[0].document
         thread_id = (document.metadata_json or {}).get("thread_id")
-        if document.source_type == "gmail" and thread_id:
+        if document.source_type == "gmail" and thread_id and plan.content_scope_match_count is None:
             thread_scores[thread_id] = max(
                 thread_scores.get(thread_id, 0.0),
                 max(match.score for match in matches),

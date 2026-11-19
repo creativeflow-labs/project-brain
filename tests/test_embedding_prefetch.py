@@ -31,7 +31,6 @@ def test_exact_match_only_and_fail_open():
 @pytest.mark.parametrize("question", [
     "그럼, 유료 협업비는?", "얀녕, 너 이름이 뭐니?",
     "magiclight 협업 담당자는?",
-    "크랩 유튜브 6월 영상 제목을 업로드 시간을 포함해서 리스트로 제시해줘.",
     "협업제안 메일을 분석해서 답장 템플릿을 만들어줘.",
 ])
 def test_existing_special_routes_are_excluded(question):
